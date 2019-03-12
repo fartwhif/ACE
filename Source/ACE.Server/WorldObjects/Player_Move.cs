@@ -1,14 +1,136 @@
 using System;
+using System.Threading;
+using ACE.Entity;
+using ACE.Entity.Enum;
 using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
-using ACE.Entity.Enum;
 using ACE.Server.Network.GameEvent.Events;
+using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.Physics.Animation;
+using ACE.Server.Physics.Collision;
 
 namespace ACE.Server.WorldObjects
 {
     partial class Player
     {
+        private TimeSpan defaultMoveToTimeout = TimeSpan.FromSeconds(15); // This is just a starting point number. It may be far off from retail.
+
+        private int moveToChainCounter;
+        private DateTime moveToChainStartTime;
+
+        private int lastCompletedMove;
+
+        public bool IsPlayerMovingTo => moveToChainCounter > lastCompletedMove;
+
+        private int GetNextMoveToChainNumber()
+        {
+            return Interlocked.Increment(ref moveToChainCounter);
+        }
+
+        public void StopExistingMoveToChains()
+        {
+            Interlocked.Increment(ref moveToChainCounter);
+
+            lastCompletedMove = moveToChainCounter;
+        }
+
+        public void CreateMoveToChain(WorldObject target, Action<bool> callback)
+        {
+            var thisMoveToChainNumber = GetNextMoveToChainNumber();
+
+            if (target.Location == null)
+            {
+                StopExistingMoveToChains();
+                log.Error($"{Name}.CreateMoveToChain({target.Name}): target.Location is null");
+
+                callback(false);
+                return;
+            }
+
+            // already within use distance?
+            var withinUseRadius = CurrentLandblock.WithinUseRadius(this, target.Guid, out var targetValid);
+            if (withinUseRadius)
+            {
+                // send TurnTo motion
+                var rotateTime = Rotate(target);
+                var actionChain = new ActionChain();
+                actionChain.AddDelaySeconds(rotateTime);
+                actionChain.AddAction(this, () =>
+                {
+                    lastCompletedMove = thisMoveToChainNumber;
+                    callback(true);
+                });
+                actionChain.EnqueueChain();
+                return;
+            }
+
+            if (target.WeenieType == WeenieType.Portal)
+                MoveToPosition(target.Location);
+            else
+                MoveToObject(target);
+
+            moveToChainStartTime = DateTime.UtcNow;
+
+            MoveToChain(target, thisMoveToChainNumber, callback);
+        }
+
+        public void MoveToChain(WorldObject target, int thisMoveToChainNumber, Action<bool> callback)
+        {
+            if (thisMoveToChainNumber != moveToChainCounter)
+            {
+                if (thisMoveToChainNumber > lastCompletedMove)
+                    lastCompletedMove = thisMoveToChainNumber;
+
+                callback(false);
+                return;
+            }
+
+            // Break loop if CurrentLandblock == null (we portaled or logged out)
+            if (CurrentLandblock == null)
+            {
+                StopExistingMoveToChains(); // This increments our moveToChainCounter and thus, should stop any additional actions in this chain
+                callback(false);
+                return;
+            }
+
+            // Have we timed out?
+            if (moveToChainStartTime + defaultMoveToTimeout <= DateTime.UtcNow)
+            {
+                StopExistingMoveToChains(); // This increments our moveToChainCounter and thus, should stop any additional actions in this chain
+                callback(false);
+                return;
+            }
+
+            // Are we within use radius?
+            var success = CurrentLandblock.WithinUseRadius(this, target.Guid, out var targetValid);
+
+            // If one of the items isn't on a landblock
+            if (!targetValid)
+            {
+                StopExistingMoveToChains(); // This increments our moveToChainCounter and thus, should stop any additional actions in this chain
+                callback(false);
+                return;
+            }
+
+            if (!success)
+            {
+                // target not reached yet
+                var actionChain = new ActionChain();
+                actionChain.AddDelaySeconds(0.1f);
+                actionChain.AddAction(this, () => MoveToChain(target, thisMoveToChainNumber, callback));
+                actionChain.EnqueueChain();
+            }
+            else
+            {
+                if (thisMoveToChainNumber > lastCompletedMove)
+                    lastCompletedMove = thisMoveToChainNumber;
+
+                callback(true);
+            }
+        }
+
+        public Position StartJump;
+
         public bool InitMoveListener;
 
         public override void MoveTo(WorldObject target, float runRate = 0.0f)
@@ -92,6 +214,67 @@ namespace ACE.Server.WorldObjects
             mvp.Speed = 1.5f;
 
             return mvp;
+        }
+
+        public void HandleFallingDamage(EnvCollisionProfile collision)
+        {
+            // starting with phat logic
+            var jumpVelocity = 0.0f;
+            PhysicsObj.WeenieObj.InqJumpVelocity(1.0f, ref jumpVelocity);
+
+            var cachedVelocity = PhysicsObj.CachedVelocity;
+
+            var overspeed = jumpVelocity + cachedVelocity.Z + 4.5f;     // a little leeway
+
+            var ratio = -overspeed / jumpVelocity;
+
+            /*Console.WriteLine($"Collision velocity: {cachedVelocity}");
+            Console.WriteLine($"Jump velocity: {jumpVelocity}");
+            Console.WriteLine($"Overspeed: {overspeed}");
+            Console.WriteLine($"Ratio: {ratio}");*/
+
+            if (ratio > 0.0f)
+            {
+                var damage = ratio * 40.0f;
+                //Console.WriteLine($"Damage: {damage}");
+
+                // bludgeon damage
+                // impact damage
+                if (damage > 0.0f && (StartJump == null || StartJump.PositionZ - PhysicsObj.Position.Frame.Origin.Z > 10.0f))
+                    TakeDamage_Falling(damage);
+            }
+        }
+
+        public void TakeDamage_Falling(float amount)
+        {
+            if (Invincible ?? false) return;
+
+            // handle lifestone protection?
+            if (UnderLifestoneProtection)
+            {
+                HandleLifestoneProtection();
+                return;
+            }
+
+            // scale by bludgeon protection
+            var resistance = EnchantmentManager.GetResistanceMod(DamageType.Bludgeon);
+            var damage = (uint)Math.Round(amount * resistance);
+
+            // update health
+            var damageTaken = (uint)-UpdateVitalDelta(Health, (int)-damage);
+            DamageHistory.Add(this, DamageType.Bludgeon, damageTaken);
+
+            var msg = Strings.GetFallMessage(damageTaken, Health.MaxValue);
+
+            Session.Network.EnqueueSend(new GameMessageSystemChat(msg, ChatMessageType.Combat));
+
+            if (Health.Current == 0)
+            {
+                OnDeath(this, DamageType.Bludgeon, false);
+                Die();
+            }
+            else
+                EnqueueBroadcast(new GameMessageSound(Guid, Sound.Wound3, 1.0f));
         }
     }
 }

@@ -1,10 +1,8 @@
 using System;
-using System.Numerics;
 
 using ACE.Common;
 using ACE.Entity;
 using ACE.Entity.Enum.Properties;
-using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
 using ACE.Server.Managers;
 using ACE.Server.Physics;
@@ -14,43 +12,69 @@ namespace ACE.Server.WorldObjects
 {
     partial class WorldObject
     {
-        private ActionQueue actionQueue;
-
-        public const int DefaultHeartbeatInterval = 5;
+        private const int heartbeatSpreadInterval = 5;
 
         protected double CachedHeartbeatInterval;
-        public double NextHeartBeatTime;
-
-        private void InitializeHeartBeat()
-        {
-            CachedHeartbeatInterval = HeartbeatInterval ?? DefaultHeartbeatInterval;
-            QueueFirstHeartbeat(Time.GetUnixTime());
-        }
-
         /// <summary>
-        /// Enqueues the first heartbeat on a staggered 0-5s delay
+        /// A value of Double.MaxValue indicates that there is no NextHeartbeat
         /// </summary>
-        public void QueueFirstHeartbeat(double currentUnixTime)
-        {
-            // The intention of this code was just to spread the heartbeat ticks out a little over a 0-5s range,
-            var delay = ThreadSafeRandom.Next(0.0f, DefaultHeartbeatInterval);
+        public double NextHeartbeatTime;
 
-            NextHeartBeatTime = currentUnixTime + delay;
+        private double cachedRegenerationInterval;
+        /// <summary>
+        /// A value of Double.MaxValue indicates that there is no NextGeneratorHeartbeat
+        /// </summary>
+        public double NextGeneratorHeartbeatTime;
+
+        private void InitializeHeartbeats()
+        {
+            var currentUnixTime = Time.GetUnixTime();
+
+            CachedHeartbeatInterval = HeartbeatInterval ?? 0;
+
+            if (CachedHeartbeatInterval > 0)
+            {
+                // The intention of this code was just to spread the heartbeat ticks out a little over a 0-5s range,
+                var delay = ThreadSafeRandom.Next(0.0f, heartbeatSpreadInterval);
+
+                NextHeartbeatTime = currentUnixTime + delay;
+            }
+            else
+            {
+                NextHeartbeatTime = double.MaxValue; // Disable future HeartBeats
+            }
+
+            cachedRegenerationInterval = RegenerationInterval;
+
+            if (IsGenerator)
+                NextGeneratorHeartbeatTime = currentUnixTime; // Generators start right away
+            else
+                NextGeneratorHeartbeatTime = double.MaxValue; // Disable future GeneratorHeartBeats
         }
 
         /// <summary>
         /// Called every ~5 seconds for WorldObject base
         /// </summary>
-        public virtual void HeartBeat(double currentUnixTime)
+        public virtual void Heartbeat(double currentUnixTime)
         {
-            if (IsGenerator)
-                Generator_HeartBeat();
-
             if (EnchantmentManager.HasEnchantments)
                 EnchantmentManager.HeartBeat();
 
             SetProperty(PropertyFloat.HeartbeatTimestamp, currentUnixTime);
-            NextHeartBeatTime = currentUnixTime + CachedHeartbeatInterval;
+            NextHeartbeatTime = currentUnixTime + CachedHeartbeatInterval;
+        }
+
+        /// <summary>
+        /// Called every [RegenerationInterval] seconds for WorldObject base
+        /// </summary>
+        public void GeneratorHeartbeat(double currentUnixTime)
+        {
+            Generator_HeartBeat();
+
+            if (cachedRegenerationInterval > 0)
+                NextGeneratorHeartbeatTime = currentUnixTime + cachedRegenerationInterval;
+            else
+                NextGeneratorHeartbeatTime = double.MaxValue;
         }
 
         /// <summary>
@@ -70,9 +94,22 @@ namespace ACE.Server.WorldObjects
                     // If we find that there is a case where Creatures need to act after they've been detached from the landblock,
                     // that work should be enqueued onto WorldManager
                 }
+                else if (IsGenerator)
+                {
+                    // This is a detached generator, we don't need to further the action chain
+                }
+                else if (this is SpellProjectile)
+                {
+                    // Do no more work for detached spell projectiles
+                }
                 else
                 {
                     // Enqueue work for detached objects onto our thread-safe WorldManager
+
+                    // Slumlords (housing) can be loaded without its landblock
+                    if (!(this is SlumLord))
+                        log.WarnFormat("Item 0x{0:X8}:{1} has enqueued an action after it's been detached from a landblock.", Guid.Full, Name);
+
                     WorldManager.EnqueueAction(action);
                 }
             }
@@ -245,7 +282,7 @@ namespace ACE.Server.WorldObjects
             var spellProjectile = this as SpellProjectile;
             if (spellProjectile != null && spellProjectile.SpellType == SpellProjectile.ProjectileSpellType.Ring)
             {
-                var dist = Vector3.Distance(spellProjectile.SpawnPos.ToGlobal(), Location.ToGlobal());
+                var dist = spellProjectile.SpawnPos.DistanceTo(Location);
                 var maxRange = spellProjectile.Spell.BaseRangeConstant;
                 //Console.WriteLine("Max range: " + maxRange);
                 if (dist > maxRange)

@@ -2,6 +2,7 @@ using ACE.Database.Models.Shard;
 using ACE.Database.Models.World;
 using ACE.Entity;
 using ACE.Entity.Enum;
+using ACE.Server.Entity;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
 
@@ -31,48 +32,25 @@ namespace ACE.Server.WorldObjects
         {
             IsLocked = false;
             IsOpen = false;
+
+            // unanimated objects will float in the air, and not be affected by gravity
+            // unless we give it a bit of velocity to start
+            // fixes floating storage chests
+            Velocity = new AceVector3(0.0f, 0.0f, 0.5f);
         }
 
-        /// <summary>
-        /// Called when player attempts to open a storage chest in a house
-        /// </summary>
-        public override void ActOnUse(WorldObject worldObject)
+        public override ActivationResult CheckUseRequirements(WorldObject activator)
         {
-            var player = worldObject as Player;
-            if (player == null) return;
+            if (!(activator is Player player))
+                return new ActivationResult(false);
 
-            // verify permissions to use storage
-            if (!House.HasPermission(player, true))
+            if (!House.RootHouse.HasPermission(player, true))
             {
                 player.Session.Network.EnqueueSend(new GameEventCommunicationTransientString(player.Session, $"The {Name} is locked!"));
                 EnqueueBroadcast(new GameMessageSound(Guid, Sound.OpenFailDueToLock, 1.0f));
-                player.SendUseDoneEvent();
-                return;
+                return new ActivationResult(false);
             }
-
-            base.ActOnUse(worldObject);
-        }
-
-        /// <summary>
-        /// This event is raised when player adds item to house storage chest
-        /// </summary>
-        public override void OnAddItem()
-        {
-            //Console.WriteLine("Storage.OnAddItem()");
-            OnAddRemoveItem();
-        }
-
-        /// <summary>
-        /// This event is raised when player removes item from house storage chest
-        /// </summary>
-        public override void OnRemoveItem()
-        {
-            //Console.WriteLine("Storage.OnRemoveItem()");
-            OnAddRemoveItem();
-        }
-
-        public void OnAddRemoveItem()
-        {
+            return new ActivationResult(true);
         }
     }
 }

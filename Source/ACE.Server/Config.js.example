@@ -1,7 +1,6 @@
 {
   "Server": {
     "WorldName": "ACEmulator",
-    "Welcome": "Welcome to this ACE server!\nFor more information visit http://emulator.ac",
     "Network": {
       "Host": "0.0.0.0",
       "Port": 9000,
@@ -9,9 +8,11 @@
       "DefaultSessionTimeout": 60
     },
     "Accounts": {
-        "OverrideCharacterPermissions": true,
-        "DefaultAccessLevel": 0,
-        "AllowAutoAccountCreation": true
+      "OverrideCharacterPermissions": true,
+      "DefaultAccessLevel": 0,
+      "AllowAutoAccountCreation": true,
+      "PasswordHashWorkFactor": 8,
+      "ForceWorkFactorMigration": true
     },
     "OutputOnlyConsole": false,
     "DatFilesDirectory": "c:\\ACE\\",
@@ -25,7 +26,7 @@
             "Permaload": true,
             "IncludeAdjacents": false,
             "Enabled": true
-        },        
+        },
         {
             "Id": "A9B4FFFF",
             "Description": "Holtburg",

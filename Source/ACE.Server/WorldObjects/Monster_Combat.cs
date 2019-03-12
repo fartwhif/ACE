@@ -80,7 +80,7 @@ namespace ACE.Server.WorldObjects
             return AttackHeights[rng];
         }
 
-        public virtual CombatType GetAttackType()
+        public CombatType GetNextAttackType()
         {
             if (CombatTable == null)
                 GetCombatTable();
@@ -148,7 +148,7 @@ namespace ACE.Server.WorldObjects
                     if (!IsDirectVisible(AttackTarget))
                     {
                         // reroll attack type
-                        CurrentAttack = GetAttackType();
+                        CurrentAttack = GetNextAttackType();
                         continue;
 
                         // max iterations to melee?
@@ -170,13 +170,28 @@ namespace ACE.Server.WorldObjects
                 return MaxMeleeRange;   // distance_to_target?
         }
 
+        public bool MoveReady()
+        {
+            if (Timers.RunningTime < NextMoveTime)
+                return false;
+
+            PhysicsObj.update_object();
+
+            return !PhysicsObj.IsAnimating;
+        }
+
         /// <summary>
         /// Returns TRUE if creature can perform its next attack
         /// </summary>
         /// <returns></returns>
         public bool AttackReady()
         {
-            return IsAttackRange() && Timers.RunningTime >= NextAttackTime;
+            if (Timers.RunningTime < NextAttackTime || !IsAttackRange())
+                return false;
+
+            PhysicsObj.update_object();
+
+            return !PhysicsObj.IsAnimating;
         }
 
         /// <summary>

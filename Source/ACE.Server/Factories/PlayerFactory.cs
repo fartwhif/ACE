@@ -215,7 +215,7 @@ namespace ACE.Server.Factories
                             if (existingItem == null || (existingItem.MaxStackSize ?? 1) <= 1)
                                 continue;
 
-                            existingItem.StackSize += item.StackSize;
+                            existingItem.SetStackSize(existingItem.StackSize + item.StackSize);
                             continue;
                         }
 
@@ -223,7 +223,7 @@ namespace ACE.Server.Factories
                         if (loot != null)
                         {
                             if (loot.StackSize.HasValue && loot.MaxStackSize.HasValue)
-                                loot.StackSize = (item.StackSize <= loot.MaxStackSize) ? item.StackSize : loot.MaxStackSize;
+                                loot.SetStackSize((item.StackSize <= loot.MaxStackSize) ? item.StackSize : loot.MaxStackSize);
                         }
                         else
                         {
@@ -246,7 +246,7 @@ namespace ACE.Server.Factories
                                 if (existingItem == null || (existingItem.MaxStackSize ?? 1) <= 1)
                                     continue;
 
-                                existingItem.StackSize += item.StackSize;
+                                existingItem.SetStackSize(existingItem.StackSize + item.StackSize);
                                 continue;
                             }
 
@@ -254,7 +254,7 @@ namespace ACE.Server.Factories
                             if (loot != null)
                             {
                                 if (loot.StackSize.HasValue && loot.MaxStackSize.HasValue)
-                                    loot.StackSize = (item.StackSize <= loot.MaxStackSize) ? item.StackSize : loot.MaxStackSize;
+                                    loot.SetStackSize((item.StackSize <= loot.MaxStackSize) ? item.StackSize : loot.MaxStackSize);
                             }
                             else
                             {
@@ -286,7 +286,7 @@ namespace ACE.Server.Factories
             }
 
             player.Name = characterCreateInfo.Name;
-            player.Character.Name = player.Name;
+            player.Character.Name = characterCreateInfo.Name;
 
 
             // Index used to determine the starting location
@@ -298,9 +298,14 @@ namespace ACE.Server.Factories
                 starterArea.Locations[0].Frame.Origin.X, starterArea.Locations[0].Frame.Origin.Y, starterArea.Locations[0].Frame.Origin.Z,
                 starterArea.Locations[0].Frame.Orientation.X, starterArea.Locations[0].Frame.Orientation.Y, starterArea.Locations[0].Frame.Orientation.Z, starterArea.Locations[0].Frame.Orientation.W);
 
-            player.Instantiation = player.Location;
-            player.Sanctuary = player.Location;
+            player.Instantiation = new Position(player.Location);
+            player.Sanctuary = new Position(player.Location);
 
+            if (player is Sentinel || player is Admin)
+            {
+                player.Character.IsPlussed = true;
+                player.CloakStatus = CloakStatus.Off;
+            }
 
             CharacterCreateSetDefaultCharacterOptions(player);
 
@@ -562,11 +567,7 @@ namespace ACE.Server.Factories
                     stackSize = loot.MaxStackSize;
 
                 if (stackSize > 1)
-                {
-                    loot.StackSize = stackSize;
-                    loot.EncumbranceVal = (loot.StackUnitEncumbrance ?? 0) * (stackSize ?? 1);
-                    loot.Value = (loot.StackUnitValue ?? 0) * (stackSize ?? 1);
-                }
+                    loot.SetStackSize(stackSize);
 
                 player.TryAddToInventory(loot);
             }

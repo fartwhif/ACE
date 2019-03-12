@@ -11,6 +11,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 
 using log4net;
 
+using ACE.Database.Entity;
 using ACE.Database.Models.World;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
@@ -46,41 +47,13 @@ namespace ACE.Database
         }
 
 
-        /// <summary>
-        /// Will return uint.MaxValue if no records were found within the range provided.
-        /// </summary>
-        public uint GetMaxGuidFoundInRange(uint min, uint max)
-        {
-            using (var context = new WorldDbContext())
-            {
-                var results = context.LandblockInstance
-                    .AsNoTracking()
-                    .Where(r => r.Guid >= min && r.Guid <= max)
-                    .ToList();
-
-                if (!results.Any())
-                    return uint.MaxValue;
-
-                var maxId = min;
-
-                foreach (var result in results)
-                {
-                    if (result.Guid > maxId)
-                        maxId = result.Guid;
-                }
-
-                return maxId;
-            }
-        }
-
-
         private readonly ConcurrentDictionary<uint, Weenie> weenieCache = new ConcurrentDictionary<uint, Weenie>();
 
         /// <summary>
         /// This will populate all sub collections except the following: LandblockInstances, PointsOfInterest<para />
         /// This will also update the weenie cache.
         /// </summary>
-        private Weenie GetWeenie(WorldDbContext context, uint weenieClassId)
+        public Weenie GetWeenie(WorldDbContext context, uint weenieClassId)
         {
             // Base properties for every weenie (ACBaseQualities)
             var weenie = context.Weenie
@@ -298,7 +271,6 @@ namespace ACE.Database
                         weenie = query.FirstOrDefault();
 
                         scrollsBySpellID[spellID] = weenie;
-
                     }
                 }
             }
@@ -464,6 +436,7 @@ namespace ACE.Database
             using (var context = new WorldDbContext())
             {
                 return context.LandblockInstance
+                    .Include(r => r.LandblockInstanceLink)
                     .AsNoTracking()
                     .FirstOrDefault(r => r.Guid == guid);
             }
@@ -474,14 +447,34 @@ namespace ACE.Database
             using (var context = new WorldDbContext())
             {
                 return context.LandblockInstance
+                    .Include(r => r.LandblockInstanceLink)
                     .AsNoTracking()
                     .Where(i => i.WeenieClassId == wcid)
                     .ToList();
             }
         }
 
-        public List<HousePortal> GetHousePortals(uint houseId)
+
+        public List<HouseListResults> GetHousesAll()
         {
+            using (var context = new WorldDbContext())
+            {
+                var query = from weenie in context.Weenie
+                            join winst in context.LandblockInstance on weenie.ClassId equals winst.WeenieClassId
+                            where weenie.Type == (int)WeenieType.SlumLord
+                            select new HouseListResults(weenie, winst);
+
+                return query.ToList();
+            }
+        }
+
+        private readonly ConcurrentDictionary<uint, List<HousePortal>> cachedHousePortals = new ConcurrentDictionary<uint, List<HousePortal>>();
+
+        public List<HousePortal> GetCachedHousePortals(uint houseId)
+        {
+            if (cachedHousePortals.TryGetValue(houseId, out var value))
+                return value;
+
             using (var context = new WorldDbContext())
             {
                 var results = context.HousePortal
@@ -489,12 +482,36 @@ namespace ACE.Database
                     .Where(p => p.HouseId == houseId)
                     .ToList();
 
+                cachedHousePortals[houseId] = results;
+
                 return results;
             }
         }
 
-        public List<HousePortal> GetHousePortalsByLandblock(uint landblockId)
+        /// <summary>
+        /// This takes under ? second to complete.
+        /// </summary>
+        public void CacheAllHousePortals()
         {
+            using (var context = new WorldDbContext())
+            {
+                var results = context.HousePortal
+                    .AsNoTracking()
+                    .GroupBy(r => r.HouseId)
+                    .ToList();
+
+                foreach (var result in results)
+                    cachedHousePortals[result.Key] = result.ToList();
+            }
+        }
+
+        private readonly ConcurrentDictionary<uint, List<HousePortal>> cachedHousePortalsByLandblock = new ConcurrentDictionary<uint, List<HousePortal>>();
+
+        public List<HousePortal> GetCachedHousePortalsByLandblock(uint landblockId)
+        {
+            if (cachedHousePortalsByLandblock.TryGetValue(landblockId, out var value))
+                return value;
+
             using (var context = new WorldDbContext())
             {
                 var results = context.HousePortal
@@ -502,9 +519,12 @@ namespace ACE.Database
                     .Where(p => landblockId == p.ObjCellId >> 16)
                     .ToList();
 
+                cachedHousePortalsByLandblock[landblockId] = results;
+
                 return results;
             }
         }
+
 
         private readonly ConcurrentDictionary<string, PointsOfInterest> cachedPointsOfInterest = new ConcurrentDictionary<string, PointsOfInterest>();
 

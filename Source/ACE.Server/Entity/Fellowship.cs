@@ -159,7 +159,7 @@ namespace ACE.Server.Entity
                 else
                 {                 
                     FellowshipMembers.Remove(player);
-                    oldFellows.Add(player.Guid.Full, DateTime.Now);
+                    oldFellows.TryAdd(player.Guid.Full, DateTime.Now);
                     player.Session.Network.EnqueueSend(new GameEventFellowshipQuit(player.Session, player.Guid.Full));
                     //member.Session.Network.EnqueueSend(new GameMessageFellowshipQuit(member.Session, player.Guid.Full));
                     AssignNewLeader(null);
@@ -170,7 +170,7 @@ namespace ACE.Server.Entity
             else
             {
                 FellowshipMembers.Remove(player);
-                oldFellows.Add(player.Guid.Full, DateTime.Now);
+                oldFellows.TryAdd(player.Guid.Full, DateTime.Now);
                 player.Session.Network.EnqueueSend(new GameEventFellowshipQuit(player.Session, player.Guid.Full));
                 CalculateXPSharing();
                 SendMessageAndUpdate($"{player.Name} left the fellowship");
@@ -383,6 +383,15 @@ namespace ACE.Server.Entity
         {
             foreach (var fellow in FellowshipMembers)
                 fellow.Session.Network.EnqueueSend(new GameEventFellowshipUpdateFellow(fellow.Session, player, ShareXP, FellowUpdateType.Vitals));
+        }
+
+        public void OnDeath(Player player)
+        {
+            foreach (var fellow in FellowshipMembers)
+            {
+                if (fellow != player)
+                    fellow.Session.Network.EnqueueSend(new GameMessageSystemChat($"Your fellow {player.Name} has died!", ChatMessageType.Broadcast));
+            }
         }
     }
 }

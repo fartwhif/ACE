@@ -80,9 +80,12 @@ namespace ACE.Server.WorldObjects
                 GenerateWieldedTreasure();
 
                 EquipInventoryItems();
-            }
 
-            Value = null; // Creatures don't have value. By setting this to null, it effectively disables the Value property. (Adding/Subtracting from null results in null)
+                // TODO: fix tod data
+                Health.Current = Health.MaxValue;
+                Stamina.Current = Stamina.MaxValue;
+                Mana.Current = Mana.MaxValue;
+            }
 
             CurrentMotionState = new Motion(MotionStance.NonCombat, MotionCommand.Ready);
         }
@@ -230,7 +233,7 @@ namespace ACE.Server.WorldObjects
             // player will always walk instead of run, and if MovementParams.CanCharge is sent, they will always charge
             // to remedy this, we manually calculate a threshold based on WalkRunThreshold
 
-            var dist = Vector3.Distance(Location.ToGlobal(), targetLocation.ToGlobal());
+            var dist = Location.DistanceTo(targetLocation);
             if (dist >= motion.MoveToParameters.WalkRunThreshold / 2.0f)     // default 15 distance seems too far, especially with weird in-combat walking animation?
             {
                 motion.MoveToParameters.MovementParameters |= MovementParams.CanCharge;
@@ -265,9 +268,7 @@ namespace ACE.Server.WorldObjects
 
             actionChain.AddAction(this, () => EmoteManager.ExecuteEmoteSet(EmoteCategory.Use, null, player));
             actionChain.EnqueueChain();
-
-            player.SendUseDoneEvent();
-        }
+       }
 
         public override void OnCollideObject(WorldObject target)
         {

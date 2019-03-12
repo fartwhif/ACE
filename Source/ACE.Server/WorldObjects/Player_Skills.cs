@@ -399,40 +399,38 @@ namespace ACE.Server.WorldObjects
             return false;
         }
 
+        /// <summary>
+        /// Returns the maximum rank that can be purchased with an xp amount
+        /// </summary>
+        /// <param name="sac">Trained or specialized skill</param>
+        /// <param name="xpAmount">The amount of xp used to make the purchase</param>
+        public int GetRankForXP(SkillAdvancementClass sac, uint xpAmount)
+        {
+            var rankXpTable = GetXPTable(sac);
+            for (var i = rankXpTable.Count - 1; i >= 0; i--)
+            {
+                var rankAmount = rankXpTable[i];
+                if (xpAmount >= rankAmount)
+                    return i;
+            }
+            return -1;
+        }
+
         private const uint magicSkillCheckMargin = 50;
 
-        public bool CanReadScroll(MagicSchool school, uint power)
+        public bool CanReadScroll(Scroll scroll)
         {
-            bool ret = false;
-            CreatureSkill creatureSkill;
+            var power = scroll.Spell.Power;
 
-            switch (school)
-            {
-                case MagicSchool.CreatureEnchantment:
-                    creatureSkill = GetCreatureSkill(Skill.CreatureEnchantment);
-                    break;
-                case MagicSchool.WarMagic:
-                    creatureSkill = GetCreatureSkill(Skill.WarMagic);
-                    break;
-                case MagicSchool.ItemEnchantment:
-                    creatureSkill = GetCreatureSkill(Skill.ItemEnchantment);
-                    break;
-                case MagicSchool.LifeMagic:
-                    creatureSkill = GetCreatureSkill(Skill.LifeMagic);
-                    break;
-                case MagicSchool.VoidMagic:
-                    creatureSkill = GetCreatureSkill(Skill.VoidMagic);
-                    break;
-                default:
-                    // Undefined magic school, something bad happened.
-                    Debug.Assert((int)school > 5 || school <= 0, "Undefined magic school?");
-                    return false;
-            }
+            // level 1/7/8 scrolls can be learned by anyone?
+            if (power < 50 || power >= 300) return true;
 
-            if (creatureSkill.AdvancementClass >= SkillAdvancementClass.Trained && creatureSkill.Current >= (power - magicSkillCheckMargin))
-                ret = true;
+            var magicSkill = scroll.Spell.GetMagicSkill();
+            var playerSkill = GetCreatureSkill(magicSkill);
 
-            return ret;
+            var minSkill = power - magicSkillCheckMargin;
+
+            return playerSkill.AdvancementClass >= SkillAdvancementClass.Trained && playerSkill.Current >= minSkill;
         }
 
         public void AddSkillCredits(int amount, bool showText)
@@ -448,19 +446,6 @@ namespace ACE.Server.WorldObjects
                 Session.Network.EnqueueSend(new GameMessageSystemChat(message, ChatMessageType.Advancement));
                 Session.Network.EnqueueSend(new GameMessageSound(Guid, Sound.RaiseTrait, 1f));
             }
-        }
-
-        public Skill ConvertToMoASkill(Skill skill)
-        {
-            if (this is Player player)
-            {
-                if (SkillExtensions.RetiredMelee.Contains(skill))
-                    return player.GetHighestMeleeSkill();
-                if (SkillExtensions.RetiredMissile.Contains(skill))
-                    return Skill.MissileWeapons;
-            }
-
-            return skill;
         }
 
         /// <summary>
@@ -531,7 +516,43 @@ namespace ACE.Server.WorldObjects
             }
         }
 
+        public static HashSet<Skill> MeleeSkills = new HashSet<Skill>()
+        {
+            Skill.LightWeapons,
+            Skill.HeavyWeapons,
+            Skill.FinesseWeapons,
+            Skill.DualWield,
+            Skill.TwoHandedCombat,
 
+            // legacy
+            Skill.Axe,
+            Skill.Dagger,
+            Skill.Mace,
+            Skill.Spear,
+            Skill.Staff,
+            Skill.Sword,
+            Skill.UnarmedCombat
+        };
+
+        public static HashSet<Skill> MissileSkills = new HashSet<Skill>()
+        {
+            Skill.MissileWeapons,
+
+            // legacy
+            Skill.Bow,
+            Skill.Crossbow,
+            Skill.Sling,
+            Skill.ThrownWeapon
+        };
+
+        public static HashSet<Skill> MagicSkills = new HashSet<Skill>()
+        {
+            Skill.CreatureEnchantment,
+            Skill.ItemEnchantment,
+            Skill.LifeMagic,
+            Skill.VoidMagic,
+            Skill.WarMagic
+        };
 
         public static List<Skill> AlwaysTrained = new List<Skill>()
         {
@@ -548,22 +569,143 @@ namespace ACE.Server.WorldObjects
             return !AlwaysTrained.Contains(skill);
         }
 
-        public static Dictionary<HeritageGroup, List<Skill>> HeritageBonuses = new Dictionary<HeritageGroup, List<Skill>>
+
+        public override bool GetHeritageBonus(WorldObject weapon)
         {
-            // contains a bunch of outdated skills, according to heritage select screen description?
-            { ACE.Entity.Enum.HeritageGroup.Aluvian, new List<Skill> { Skill.Dagger, Skill.Bow } },
-            { ACE.Entity.Enum.HeritageGroup.Gharundim, new List<Skill> { Skill.Staff, Skill.WarMagic } }, // magic spells?
-            { ACE.Entity.Enum.HeritageGroup.Sho, new List<Skill> { Skill.UnarmedCombat, Skill.Bow } },
-            { ACE.Entity.Enum.HeritageGroup.Viamontian, new List<Skill> { Skill.Sword, Skill.Crossbow } },
-            { ACE.Entity.Enum.HeritageGroup.Shadowbound, new List<Skill> { Skill.UnarmedCombat, Skill.Crossbow } }, // umbraen?
-            { ACE.Entity.Enum.HeritageGroup.Penumbraen, new List<Skill> { Skill.UnarmedCombat, Skill.Crossbow } },
-            { ACE.Entity.Enum.HeritageGroup.Gearknight, new List<Skill> { Skill.Mace, Skill.Crossbow } },
-            { ACE.Entity.Enum.HeritageGroup.Undead, new List<Skill> { Skill.Axe, Skill.ThrownWeapon } },
-            { ACE.Entity.Enum.HeritageGroup.Empyrean, new List<Skill> { Skill.Sword, Skill.WarMagic } },  // magic?
-            { ACE.Entity.Enum.HeritageGroup.Tumerok, new List<Skill> { Skill.Spear, Skill.ThrownWeapon } },
-            { ACE.Entity.Enum.HeritageGroup.Lugian, new List<Skill> { Skill.Axe, Skill.ThrownWeapon } },
-            { ACE.Entity.Enum.HeritageGroup.Olthoi, new List<Skill>() },    // natural claws and pincers?
-            { ACE.Entity.Enum.HeritageGroup.OlthoiAcid, new List<Skill>() }    // olthoi spitters acidic spit?
+            return GetHeritageBonus(GetWeaponType(weapon));
+        }
+
+        public bool GetHeritageBonus(WeaponType weaponType)
+        {
+            switch (HeritageGroup)
+            {
+                case HeritageGroup.Aluvian:
+                    if (weaponType == WeaponType.Dagger || weaponType == WeaponType.Bow)
+                        return true;
+                    break;
+                case HeritageGroup.Gharundim:
+                    if (weaponType == WeaponType.Staff || weaponType == WeaponType.Magic)
+                        return true;
+                    break;
+                case HeritageGroup.Sho:
+                    if (weaponType == WeaponType.Unarmed || weaponType == WeaponType.Bow)
+                        return true;
+                    break;
+                case HeritageGroup.Viamontian:
+                    if (weaponType == WeaponType.Sword || weaponType == WeaponType.Crossbow)
+                        return true;
+                    break;
+                case HeritageGroup.Shadowbound: // umbraen
+                case HeritageGroup.Penumbraen:
+                    if (weaponType == WeaponType.Unarmed || weaponType == WeaponType.Crossbow)
+                        return true;
+                    break;
+                case HeritageGroup.Gearknight:
+                    if (weaponType == WeaponType.Mace || weaponType == WeaponType.Crossbow)
+                        return true;
+                    break;
+                case HeritageGroup.Undead:
+                    if (weaponType == WeaponType.Axe || weaponType == WeaponType.Thrown)
+                        return true;
+                    break;
+                case HeritageGroup.Empyrean:
+                    if (weaponType == WeaponType.Sword || weaponType == WeaponType.Magic)
+                        return true;
+                    break;
+                case HeritageGroup.Tumerok:
+                    if (weaponType == WeaponType.Spear || weaponType == WeaponType.Thrown)
+                        return true;
+                    break;
+                case HeritageGroup.Lugian:
+                    if (weaponType == WeaponType.Axe || weaponType == WeaponType.Thrown)
+                        return true;
+                    break;
+                case HeritageGroup.Olthoi:
+                case HeritageGroup.OlthoiAcid:
+                    break;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// If the WeaponType is missing from a weapon, tries to convert from WeaponSkill (for old data)
+        /// </summary>
+        public WeaponType GetWeaponType(WorldObject weapon)
+        {
+            if (weapon == null)
+                return WeaponType.Undef;    // unarmed?
+
+            var weaponType = weapon.GetProperty(PropertyInt.WeaponType);
+            if (weaponType != null)
+                return (WeaponType)weaponType;
+
+            var weaponSkill = weapon.GetProperty(PropertyInt.WeaponSkill);
+            if (weaponSkill != null && SkillToWeaponType.TryGetValue((Skill)weaponSkill, out WeaponType converted))
+                return converted;
+            else
+                return WeaponType.Undef;
+        }
+
+        public Dictionary<Skill, WeaponType> SkillToWeaponType = new Dictionary<Skill, WeaponType>()
+        {
+            { Skill.UnarmedCombat, WeaponType.Unarmed },
+            { Skill.Sword, WeaponType.Sword },
+            { Skill.Axe, WeaponType.Axe },
+            { Skill.Mace, WeaponType.Mace },
+            { Skill.Spear, WeaponType.Spear },
+            { Skill.Dagger, WeaponType.Dagger },
+            { Skill.Staff, WeaponType.Staff },
+            { Skill.Bow, WeaponType.Bow },
+            { Skill.Crossbow, WeaponType.Crossbow },
+            { Skill.ThrownWeapon, WeaponType.Thrown },
+            { Skill.TwoHandedCombat, WeaponType.TwoHanded },
+            { Skill.CreatureEnchantment, WeaponType.Magic },    // only for war/void?
+            { Skill.ItemEnchantment, WeaponType.Magic },
+            { Skill.LifeMagic, WeaponType.Magic },
+            { Skill.WarMagic, WeaponType.Magic },
+            { Skill.VoidMagic, WeaponType.Magic },
         };
+
+        public void HandleAugsForwardCompatibility()
+        {
+            switch (HeritageGroup)
+            {
+                case HeritageGroup.Aluvian:
+                case HeritageGroup.Gharundim:
+                case HeritageGroup.Sho:
+                case HeritageGroup.Viamontian:
+                    AugmentationJackOfAllTrades = 1;
+                    break;
+
+                case HeritageGroup.Shadowbound:
+                case HeritageGroup.Penumbraen:
+                    AugmentationCriticalExpertise = 1;
+                    break;
+
+                case HeritageGroup.Gearknight:
+                    AugmentationDamageReduction = 1;
+                    break;
+
+                case HeritageGroup.Undead:
+                    AugmentationCriticalDefense = 1;
+                    break;
+
+                case HeritageGroup.Empyrean:
+                    AugmentationInfusedLifeMagic = 1;
+                    break;
+
+                case HeritageGroup.Tumerok:
+                    AugmentationCriticalPower = 1;
+                    break;
+
+                case HeritageGroup.Lugian:
+                    AugmentationIncreasedCarryingCapacity = 1;
+                    break;
+
+                case HeritageGroup.Olthoi:
+                case HeritageGroup.OlthoiAcid:
+                    break;
+            }
+        }
     }
 }

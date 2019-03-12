@@ -57,9 +57,9 @@ namespace ACE.Server.Managers
 
             if (ConfigManager.Config.Server.PreloadedLandblocks == null)
             {
-                log.Info("No configuration found for PreloadedLandblocks, please refer to Config.json.example");
+                log.Info("No configuration found for PreloadedLandblocks, please refer to Config.js.example");
                 log.Warn("Initializing PreloadedLandblocks with single default for Hebian-To (Global Events)");
-                log.Warn("Add a PreloadedLandblocks section to your Config.json file and adjust to meet your needs");
+                log.Warn("Add a PreloadedLandblocks section to your Config.js file and adjust to meet your needs");
                 ConfigManager.Config.Server.PreloadedLandblocks = new List<PreloadedLandblocks> { new PreloadedLandblocks { Id = "E74EFFFF", Description = "Hebian-To (Global Events)", Permaload = true, IncludeAdjacents = true, Enabled = true } };
             }
 
@@ -90,15 +90,6 @@ namespace ACE.Server.Managers
         {
             var block = GetLandblock(worldObject.Location.LandblockId, loadAdjacents);
             block.AddWorldObject(worldObject);
-        }
-
-        /// <summary>
-        /// Removes a WorldObject from the landblock defined by the object's location
-        /// </summary>
-        public static void RemoveObject(WorldObject worldObject)
-        {
-            var block = GetLandblock(worldObject.Location.LandblockId, false);
-            block.RemoveWorldObject(worldObject.Guid, false);
         }
 
         /// <summary>

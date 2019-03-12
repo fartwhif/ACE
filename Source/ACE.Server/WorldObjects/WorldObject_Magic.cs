@@ -21,12 +21,6 @@ namespace ACE.Server.WorldObjects
 {
     partial class WorldObject
     {
-        public struct EnchantmentStatus
-        {
-            public StackType stackType;
-            public GameMessageSystemChat message;
-        }
-
         /// <summary>
         /// Instantly casts a spell for a WorldObject (ie. spell traps)
         /// </summary>
@@ -53,14 +47,19 @@ namespace ACE.Server.WorldObjects
                 return;
 
             // if not resisted, cast spell
-            var status = default(EnchantmentStatus);
+            var status = new EnchantmentStatus(spell);
             switch (spell.School)
             {
                 case MagicSchool.WarMagic:
                     WarMagic(target, spell);
                     break;
                 case MagicSchool.LifeMagic:
-                    LifeMagic(target, spell, out uint damage, out bool critical, out status, caster);
+                    var targetDeath = LifeMagic(target, spell, out uint damage, out bool critical, out status, caster);
+                    if (targetDeath && target is Creature targetCreature)
+                    {
+                        targetCreature.OnDeath(this, DamageType.Health, false);
+                        targetCreature.Die();
+                    }
                     break;
                 case MagicSchool.CreatureEnchantment:
                     status = CreatureMagic(target, spell, caster);
@@ -75,12 +74,12 @@ namespace ACE.Server.WorldObjects
 
             // send message to player, if applicable
             var player = this as Player;
-            if (player != null && status.message != null && showMsg)
-                player.Session.Network.EnqueueSend(status.message);
+            if (player != null && status.Message != null && showMsg)
+                player.Session.Network.EnqueueSend(status.Message);
 
             // for invisible spell traps,
             // their effects won't be seen if they broadcast from themselves
-            if (spell.TargetEffect != 0)
+            if (target != null && spell.TargetEffect != 0)
                 target.EnqueueBroadcast(new GameMessageScript(target.Guid, spell.TargetEffect, spell.Formula.Scale));
         }
 
@@ -137,14 +136,14 @@ namespace ACE.Server.WorldObjects
         /// Returns TRUE if player should be allowed to cast the spell on target player
         /// Returns FALSE if player shouldn't be allowed to cast the spell on target player
         /// </returns>
-        protected bool? CheckPKStatusVsTarget(Player player, WorldObject target, Spell spell)
+        protected List<WeenieErrorWithString> CheckPKStatusVsTarget(Player player, WorldObject target, Spell spell)
         {
             if (player == null || target == null)
                 return null;
 
             if (player == target)
-                return true;
-
+                return null;
+        
             var targetPlayer = target as Player;
             if (targetPlayer == null && target.WielderId != null)
             {
@@ -152,20 +151,25 @@ namespace ACE.Server.WorldObjects
                 targetPlayer = player.CurrentLandblock.GetObject(target.WielderId.Value) as Player;
             }
             if (targetPlayer == null)
-                return true;
+                return null;
+
+            if (player.PlayerKillerStatus == PlayerKillerStatus.Free || targetPlayer.PlayerKillerStatus == PlayerKillerStatus.Free)
+                return null;
 
             if (spell == null || spell.IsHarmful)
             {
                 // Ensure that a non-PK cannot cast harmful spells on another player
                 if (player.PlayerKillerStatus == PlayerKillerStatus.NPK)
-                    return false;
+                    return new List<WeenieErrorWithString>() { WeenieErrorWithString.YouFailToAffect_YouAreNotPK, WeenieErrorWithString._FailsToAffectYou_TheyAreNotPK };
+
+                if (targetPlayer.PlayerKillerStatus == PlayerKillerStatus.NPK)
+                    return new List<WeenieErrorWithString>() { WeenieErrorWithString.YouFailToAffect_TheyAreNotPK, WeenieErrorWithString._FailsToAffectYou_YouAreNotPK };
 
                 // Ensure that a harmful spell isn't being cast on another player that doesn't have the same PK status
                 if (player.PlayerKillerStatus != targetPlayer.PlayerKillerStatus)
-                    return false;
+                    return new List<WeenieErrorWithString>() { WeenieErrorWithString.YouFailToAffect_NotSamePKType, WeenieErrorWithString._FailsToAffectYou_NotSamePKType };
             }
-
-            return true;
+            return null;
         }
 
         /// <summary>
@@ -175,6 +179,9 @@ namespace ACE.Server.WorldObjects
         {
             var targetPlayer = target as Player;
             var targetCreature = target as Creature;
+
+            // ensure target is enchantable
+            if (!target.IsEnchantable) return true;
 
             // Self targeted spells should have a target of self
             if ((int)Math.Floor(spell.BaseRangeConstant) == 0 && targetPlayer == null)
@@ -188,11 +195,17 @@ namespace ACE.Server.WorldObjects
             if (targetCreature != null && targetPlayer == null && spell.IsBeneficial)
                 return true;
 
-            // Invalidate beneficial spells against monster wielded items
-            if (targetCreature == null && spell.IsBeneficial && target.OwnerId != null)
+            // check item spells
+            if (targetCreature == null && target.WielderId != null)
             {
-                var targetMonster = CurrentLandblock.GetObject(target.OwnerId.Value) as Creature;
-                if (!(targetMonster is Player))
+                var parent = CurrentLandblock.GetObject(target.WielderId.Value) as Player;
+
+                // Invalidate beneficial spells against monster wielded items
+                if (parent == null && spell.IsBeneficial)
+                    return true;
+
+                // Invalidate harmful spells against player wielded items, depending on pk status
+                if (parent != null && spell.IsHarmful && CheckPKStatusVsTarget(this as Player, parent, spell) != null)
                     return true;
             }
 
@@ -303,8 +316,7 @@ namespace ACE.Server.WorldObjects
         {
             critical = false;
             string srcVital, destVital;
-            enchantmentStatus = default(EnchantmentStatus);
-            enchantmentStatus.stackType = StackType.None;
+            enchantmentStatus = new EnchantmentStatus(spell);
             GameMessageSystemChat targetMsg = null;
 
             var player = this as Player;
@@ -316,9 +328,8 @@ namespace ACE.Server.WorldObjects
             if (this is Gem)
                 spellTarget = target as Creature;
 
-            if (!spellTarget.IsAlive)
+            if (spellTarget == null || !spellTarget.IsAlive)
             {
-                enchantmentStatus.message = null;
                 damage = 0;
                 return false;
             }
@@ -331,7 +342,11 @@ namespace ACE.Server.WorldObjects
                     int minBoostValue = Math.Min(spell.Boost, spell.MaxBoost);
                     int maxBoostValue = Math.Max(spell.Boost, spell.MaxBoost);
 
+                    var resistanceType = minBoostValue > 0 ? GetBoostResistanceType(spell.VitalDamageType) : GetDrainResistanceType(spell.VitalDamageType);
+
                     int tryBoost = ThreadSafeRandom.Next(minBoostValue, maxBoostValue);
+                    tryBoost = (int)Math.Round(tryBoost * spellTarget.GetResistanceMod(resistanceType, this));
+
                     int boost = tryBoost;
                     damage = tryBoost < 0 ? (uint)Math.Abs(tryBoost) : 0;
 
@@ -368,22 +383,20 @@ namespace ACE.Server.WorldObjects
                             if (spell.IsBeneficial)
                             {
                                 msg = $"You cast {spell.Name} and restore {boost} points of {srcVital} to {spellTarget.Name}.";
-                                enchantmentStatus.message = new GameMessageSystemChat(msg, ChatMessageType.Magic);
+                                enchantmentStatus.Message = new GameMessageSystemChat(msg, ChatMessageType.Magic);
                             }
                             else
                             {
                                 msg = $"You cast {spell.Name} and drain {Math.Abs(boost)} points of {srcVital} from {spellTarget.Name}.";
-                                enchantmentStatus.message = new GameMessageSystemChat(msg, ChatMessageType.Combat);
+                                enchantmentStatus.Message = new GameMessageSystemChat(msg, ChatMessageType.Combat);
                             }
                         }
                         else
                         {
                             var verb = spell.IsBeneficial ? "restore" : "drain";
-                            enchantmentStatus.message = new GameMessageSystemChat($"You cast {spell.Name} and {verb} {Math.Abs(boost)} points of your {srcVital}.", ChatMessageType.Magic);
+                            enchantmentStatus.Message = new GameMessageSystemChat($"You cast {spell.Name} and {verb} {Math.Abs(boost)} points of your {srcVital}.", ChatMessageType.Magic);
                         }
                     }
-                    else
-                        enchantmentStatus.message = null;
 
                     if (target is Player && spell.BaseRangeConstant > 0)
                     {
@@ -414,20 +427,21 @@ namespace ACE.Server.WorldObjects
 
                     // Calculate vital changes
                     uint srcVitalChange, destVitalChange;
-                    ResistanceType resistanceDrain, resistanceBoost;
-                    resistanceDrain = GetDrainResistanceType(spell.Source);
 
-                    // should drain resistance be taken into account here,
-                    // or only after the destVitalChange calc?
-                    srcVitalChange = (uint)Math.Round(source.GetCurrentCreatureVital(spell.Source) * spell.Proportion * source.GetNaturalResistance(resistanceDrain));
+                    // Drain Resistances - allows one to partially resist drain health/stamina/mana and harm attacks (not including other life transfer spells).
+                    var isDrain = spell.TransferFlags.HasFlag(TransferFlags.TargetSource | TransferFlags.CasterDestination);
+                    var drainMod = isDrain ? (float)source.GetResistanceMod(GetDrainResistanceType(spell.Source), caster) : 1.0f;
+
+                    srcVitalChange = (uint)Math.Round(source.GetCurrentCreatureVital(spell.Source) * spell.Proportion * drainMod);
 
                     if (spell.TransferCap != 0)
                     {
                         if (srcVitalChange > spell.TransferCap)
                             srcVitalChange = (uint)spell.TransferCap;
                     }
-                    resistanceBoost = GetBoostResistanceType(spell.Destination);
-                    destVitalChange = (uint)Math.Round(srcVitalChange * (1.0f - spell.LossPercent) * destination.GetNaturalResistance(resistanceBoost));
+                    var boostMod = isDrain ? (float)destination.GetResistanceMod(GetBoostResistanceType(spell.Destination), caster) : 1.0f;
+
+                    destVitalChange = (uint)Math.Round(srcVitalChange * (1.0f - spell.LossPercent) * boostMod);
 
                     // scale srcVitalChange to destVitalChange?
 
@@ -496,14 +510,14 @@ namespace ACE.Server.WorldObjects
 
                     if (playerSource && playerDestination && source.Guid == destination.Guid)
                     {
-                        enchantmentStatus.message = new GameMessageSystemChat($"You cast {spell.Name} on yourself and lose {srcVitalChange} points of {srcVital} and also gain {destVitalChange} points of {destVital}", ChatMessageType.Magic);
+                        enchantmentStatus.Message = new GameMessageSystemChat($"You cast {spell.Name} on yourself and lose {srcVitalChange} points of {srcVital} and also gain {destVitalChange} points of {destVital}", ChatMessageType.Magic);
                     }
                     else
                     {
                         if (playerSource)
                         {
                             if (source == this)
-                                enchantmentStatus.message = new GameMessageSystemChat($"You lose {srcVitalChange} points of {srcVital} due to casting {spell.Name} on {spellTarget.Name}", ChatMessageType.Magic);
+                                enchantmentStatus.Message = new GameMessageSystemChat($"You lose {srcVitalChange} points of {srcVital} due to casting {spell.Name} on {spellTarget.Name}", ChatMessageType.Magic);
                             else
                                 targetMsg = new GameMessageSystemChat($"You lose {srcVitalChange} points of {srcVital} due to {caster.Name} casting {spell.Name} on you", ChatMessageType.Magic);
                         }
@@ -511,7 +525,7 @@ namespace ACE.Server.WorldObjects
                         if (playerDestination)
                         {
                             if (destination == this)
-                                enchantmentStatus.message = new GameMessageSystemChat($"You gain {destVitalChange} points of {destVital} due to casting {spell.Name} on {spellTarget.Name}", ChatMessageType.Magic);
+                                enchantmentStatus.Message = new GameMessageSystemChat($"You gain {destVitalChange} points of {destVital} due to casting {spell.Name} on {spellTarget.Name}", ChatMessageType.Magic);
                             else
                                 targetMsg = new GameMessageSystemChat($"You gain {destVitalChange} points of {destVital} due to {caster.Name} casting {spell.Name} on you", ChatMessageType.Magic);
                         }
@@ -529,19 +543,19 @@ namespace ACE.Server.WorldObjects
 
                     if (spell.Name.Contains("Blight"))
                     {
-                        var tryDamage = (int)Math.Round(caster.GetCurrentCreatureVital(PropertyAttribute2nd.Mana) * spell.DrainPercentage / caster.GetNaturalResistance(ResistanceType.ManaDrain));
+                        var tryDamage = (int)Math.Round(caster.GetCurrentCreatureVital(PropertyAttribute2nd.Mana) * spell.DrainPercentage);
                         damage = (uint)-caster.UpdateVitalDelta(caster.Mana, -tryDamage);
                         damageType = DamageType.Mana;
                     }
                     else if (spell.Name.Contains("Tenacity"))
                     {
-                        var tryDamage = (int)Math.Round(caster.GetCurrentCreatureVital(PropertyAttribute2nd.Stamina) * spell.DrainPercentage / caster.GetNaturalResistance(ResistanceType.StaminaDrain));
+                        var tryDamage = (int)Math.Round(caster.GetCurrentCreatureVital(PropertyAttribute2nd.Stamina) * spell.DrainPercentage);
                         damage = (uint)-caster.UpdateVitalDelta(caster.Stamina, -tryDamage);
                         damageType = DamageType.Stamina;
                     }
                     else
                     {
-                        var tryDamage = (int)Math.Round(caster.GetCurrentCreatureVital(PropertyAttribute2nd.Health) * spell.DrainPercentage / caster.GetNaturalResistance(ResistanceType.HealthDrain));
+                        var tryDamage = (int)Math.Round(caster.GetCurrentCreatureVital(PropertyAttribute2nd.Health) * spell.DrainPercentage);
                         damage = (uint)-caster.UpdateVitalDelta(caster.Health, -tryDamage);
                         caster.DamageHistory.Add(this, DamageType.Health, damage);
                         damageType = DamageType.Health;
@@ -550,8 +564,8 @@ namespace ACE.Server.WorldObjects
                             player.Fellowship.OnVitalUpdate(player);
                     }
 
-                    var sp = CreateSpellProjectile(spell, target, damage);
-                    LaunchSpellProjectile(sp);
+                    var lifeProjectile = CreateSpellProjectile(spell, target, damage);
+                    LaunchSpellProjectile(lifeProjectile);
 
                     if (caster.Health.Current <= 0)
                     {
@@ -559,8 +573,6 @@ namespace ACE.Server.WorldObjects
                         caster.OnDeath(caster, damageType, false);
                         caster.Die();
                     }
-
-                    enchantmentStatus.message = null;
                     break;
 
                 case SpellType.Dispel:
@@ -581,9 +593,9 @@ namespace ACE.Server.WorldObjects
                     if (player != null)
                     {
                         if (player == target)
-                            enchantmentStatus.message = new GameMessageSystemChat($"You cast {spell.Name} on yourself{suffix}", ChatMessageType.Magic);
+                            enchantmentStatus.Message = new GameMessageSystemChat($"You cast {spell.Name} on yourself{suffix}", ChatMessageType.Magic);
                         else
-                            enchantmentStatus.message = new GameMessageSystemChat($"You cast {spell.Name} on {target.Name}{suffix}", ChatMessageType.Magic);
+                            enchantmentStatus.Message = new GameMessageSystemChat($"You cast {spell.Name} on {target.Name}{suffix}", ChatMessageType.Magic);
                     }
                     if (targetPlayer != null && targetPlayer != player)
                     {
@@ -601,17 +613,16 @@ namespace ACE.Server.WorldObjects
 
                 default:
                     damage = 0;
-                    enchantmentStatus.message = new GameMessageSystemChat("Spell not implemented, yet!", ChatMessageType.Magic);
+                    enchantmentStatus.Message = new GameMessageSystemChat("Spell not implemented, yet!", ChatMessageType.Magic);
                     break;
             }
 
             if (targetMsg != null)
                 (target as Player).Session.Network.EnqueueSend(targetMsg);
 
-            if (spellTarget.Health.Current == 0)
-                return true;
+            enchantmentStatus.Success = true;
 
-            return false;
+            return spellTarget.IsDead;
         }
 
         /// <summary>
@@ -645,14 +656,10 @@ namespace ACE.Server.WorldObjects
             // redirect creature dispels to life magic
             if (spell.MetaSpellType == SpellType.Dispel)
             {
-                LifeMagic(target, spell, out uint damage, out bool critical, out EnchantmentStatus enchantmentStatus);
+                LifeMagic(target, spell, out uint damage, out bool critical, out var enchantmentStatus);
                 return enchantmentStatus;
             }
-
-            if (itemCaster != null)
-                return CreateEnchantment(target, itemCaster, spell);
-
-            return CreateEnchantment(target, this, spell);
+            return CreateEnchantment(target, itemCaster ?? this, spell);
         }
 
         /// <summary>
@@ -660,9 +667,7 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         protected EnchantmentStatus ItemMagic(WorldObject target, Spell spell, WorldObject itemCaster = null)
         {
-            EnchantmentStatus enchantmentStatus = default(EnchantmentStatus);
-            enchantmentStatus.message = null;
-            enchantmentStatus.stackType = StackType.None;
+            var enchantmentStatus = new EnchantmentStatus(spell);
 
             // redirect item dispels to life magic
             if (spell.MetaSpellType == SpellType.Dispel)
@@ -674,10 +679,7 @@ namespace ACE.Server.WorldObjects
             var creature = this as Creature;
             var player = this as Player;
 
-            if ((spell.MetaSpellType == SpellType.PortalLink)
-                || (spell.MetaSpellType == SpellType.PortalRecall)
-                || (spell.MetaSpellType == SpellType.PortalSending)
-                || (spell.MetaSpellType == SpellType.PortalSummon))
+            if (spell.IsPortalSpell)
             {
                 var targetPlayer = target as Player;
 
@@ -761,7 +763,16 @@ namespace ACE.Server.WorldObjects
                             {
                                 // portal recall
                                 var portal = GetPortal(recallDID.Value);
-                                if (portal == null || !portal.CheckUseRequirements(player)) break;
+                                if (portal == null) break;
+
+                                var result = portal.CheckUseRequirements(player);
+                                if (!result.Success)
+                                {
+                                    if (result.Message != null)
+                                        player.Session.Network.EnqueueSend(result.Message);
+
+                                    break;
+                                }
 
                                 ActionChain portalRecall = new ActionChain();
                                 portalRecall.AddAction(targetPlayer, () => player.DoPreTeleportHide());
@@ -898,7 +909,7 @@ namespace ACE.Server.WorldObjects
 
                     case SpellType.FellowPortalSending:
                         if (targetPlayer != null)
-                            enchantmentStatus.message = new GameMessageSystemChat("Spell not implemented, yet!", ChatMessageType.Magic);
+                            enchantmentStatus.Message = new GameMessageSystemChat("Spell not implemented, yet!", ChatMessageType.Magic);
                         break;
                 }
             }
@@ -909,6 +920,8 @@ namespace ACE.Server.WorldObjects
 
                 return CreateEnchantment(target, this, spell);
             }
+
+            enchantmentStatus.Success = true;
 
             return enchantmentStatus;
         }
@@ -1054,8 +1067,8 @@ namespace ACE.Server.WorldObjects
 
             EnqueueBroadcast(new GameMessageScript(target.Guid, (PlayScript)spell.TargetEffect, spell.Formula.Scale));
             var enchantmentStatus = CreatureMagic(target, spell);
-            if (enchantmentStatus.message != null)
-                player.Session.Network.EnqueueSend(enchantmentStatus.message);
+            if (enchantmentStatus.Message != null)
+                player.Session.Network.EnqueueSend(enchantmentStatus.Message);
 
             var difficulty = spell.Power;
             var difficultyMod = Math.Max(difficulty, 25);   // fix difficulty for level 1 spells?
@@ -1109,7 +1122,7 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public EnchantmentStatus CreateEnchantment(WorldObject target, WorldObject caster, Spell spell)
         {
-            EnchantmentStatus enchantmentStatus = default(EnchantmentStatus);
+            var enchantmentStatus = new EnchantmentStatus(spell);
             double duration;
 
             // what should the default duration be? -1 or 0?
@@ -1176,11 +1189,13 @@ namespace ACE.Server.WorldObjects
             }
 
             if (message != null)
-                enchantmentStatus.message = new GameMessageSystemChat(message, ChatMessageType.Magic);
+                enchantmentStatus.Message = new GameMessageSystemChat(message, ChatMessageType.Magic);
             else
-                enchantmentStatus.message = null;
+                enchantmentStatus.Message = null;
 
-            enchantmentStatus.stackType = addResult.StackType;
+            enchantmentStatus.StackType = addResult.StackType;
+            enchantmentStatus.Success = true;
+
             return enchantmentStatus;
         }
 
@@ -1647,16 +1662,57 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
+        /// Returns the drain resistance for a damage type
+        /// </summary>
+        private static ResistanceType GetDrainResistanceType(DamageType damageType)
+        {
+            switch (damageType)
+            {
+                case DamageType.Health:
+                    return ResistanceType.HealthDrain;
+                case DamageType.Stamina:
+                    return ResistanceType.StaminaDrain;
+                case DamageType.Mana:
+                    return ResistanceType.ManaDrain;
+                default:
+                    return ResistanceType.Undef;
+            }
+        }
+
+        /// <summary>
+        /// Returns the boost resistance for a damage type
+        /// </summary>
+        private static ResistanceType GetBoostResistanceType(DamageType damageType)
+        {
+            switch (damageType)
+            {
+                case DamageType.Health:
+                    return ResistanceType.HealthBoost;
+                case DamageType.Stamina:
+                    return ResistanceType.StaminaBoost;
+                case DamageType.Mana:
+                    return ResistanceType.ManaBoost;
+                default:
+                    return ResistanceType.Undef;
+            }
+        }
+
+        /// <summary>
         /// Returns the drain resistance type for a vital
         /// </summary>
         private static ResistanceType GetDrainResistanceType(PropertyAttribute2nd vital)
         {
-            if (vital == PropertyAttribute2nd.Mana)
-                return ResistanceType.ManaDrain;
-            else if (vital == PropertyAttribute2nd.Stamina)
-                return ResistanceType.StaminaDrain;
-            else
-                return ResistanceType.HealthDrain;
+            switch (vital)
+            {
+                case PropertyAttribute2nd.Health:
+                    return ResistanceType.HealthDrain;
+                case PropertyAttribute2nd.Stamina:
+                    return ResistanceType.StaminaDrain;
+                case PropertyAttribute2nd.Mana:
+                    return ResistanceType.ManaDrain;
+                default:
+                    return ResistanceType.Undef;
+            }
         }
 
         /// <summary>
@@ -1664,12 +1720,25 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         private static ResistanceType GetBoostResistanceType(PropertyAttribute2nd vital)
         {
-            if (vital == PropertyAttribute2nd.Mana)
-                return ResistanceType.ManaBoost;
-            else if (vital == PropertyAttribute2nd.Stamina)
-                return ResistanceType.StaminaBoost;
-            else
-                return ResistanceType.HealthBoost;
+            switch (vital)
+            {
+                case PropertyAttribute2nd.Health:
+                    return ResistanceType.HealthBoost;
+                case PropertyAttribute2nd.Stamina:
+                    return ResistanceType.StaminaBoost;
+                case PropertyAttribute2nd.Mana:
+                    return ResistanceType.ManaBoost;
+                default:
+                    return ResistanceType.Undef;
+            }
+        }
+
+        /// <summary>
+        /// Returns TRUE if this object's spellbook contains input spell
+        /// </summary>
+        public bool SpellbookContains(uint spellID)
+        {
+            return Biota.BiotaPropertiesSpellBook.Any(i => i.Spell == spellID);
         }
     }
 }

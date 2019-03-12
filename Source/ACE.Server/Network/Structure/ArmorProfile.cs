@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using ACE.Entity.Enum;
 using ACE.Server.WorldObjects;
@@ -40,7 +41,7 @@ namespace ACE.Server.Network.Structure
             var type = armor.EnchantmentManager.GetImpenBaneKey(damageType);
             var baseResistance = armor.GetProperty(type) ?? 1.0f;
 
-            if (armor == null || !armor.IsEnchantable)
+            if (armor == null)
                 return (float)baseResistance;
 
             // banes/lures
@@ -48,9 +49,11 @@ namespace ACE.Server.Network.Structure
 
             var effectiveRL = (float)(baseResistance + resistanceMod);
 
-            // resistance cap
-            if (effectiveRL > 2.0f)
-                effectiveRL = 2.0f;
+            // resistance clamp
+            // TODO: this would be a good place to test with client values
+            //if (effectiveRL > 2.0f)
+                //effectiveRL = 2.0f;
+            effectiveRL = Math.Clamp(effectiveRL, -2.0f, 2.0f);
 
             return effectiveRL;
         }

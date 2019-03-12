@@ -27,14 +27,12 @@ namespace ACE.Server.WorldObjects
         {
         }
 
-        public override void UseItem(Player player)
+        public override void ActOnUse(WorldObject activator)
         {
-            base.UseItem(player);
-        }
+            if (!(activator is Creature creature))
+                return;
 
-        public override void ActOnUse(WorldObject worldObject)
-        {
-            base.ActOnUse(worldObject);
+            EmoteManager.OnUse(creature);
         }
     }
 }

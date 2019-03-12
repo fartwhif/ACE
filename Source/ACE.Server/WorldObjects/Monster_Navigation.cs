@@ -20,7 +20,8 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Determines if a monster is within melee range of target
         /// </summary>
-        public static readonly float MaxMeleeRange = 1.5f;
+        //public static readonly float MaxMeleeRange = 1.5f;
+        public static readonly float MaxMeleeRange = 0.75f;
         //public static readonly float MaxMeleeRange = 1.5f + 0.6f + 0.1f;    // max melee range + distance from + buffer
 
         /// <summary>
@@ -60,13 +61,16 @@ namespace ACE.Server.WorldObjects
         public bool Sticky;
 
         public double NextMoveTime;
+        public double NextCancelTime;
 
         /// <summary>
         /// Starts the process of monster turning towards target
         /// </summary>
         public void StartTurn()
         {
-            if (Timers.RunningTime < NextMoveTime)
+            //if (Timers.RunningTime < NextMoveTime)
+            //return;
+            if (!MoveReady())
                 return;
 
             if (DebugMove)
@@ -90,6 +94,8 @@ namespace ACE.Server.WorldObjects
             // need turning listener?
             IsTurning = false;
             IsMoving = true;
+            LastMoveTime = Timers.RunningTime;
+            NextCancelTime = LastMoveTime + ThreadSafeRandom.Next(2, 4);
 
             var mvp = GetMovementParameters();
             if (turnTo)
@@ -234,6 +240,9 @@ namespace ACE.Server.WorldObjects
 
             if (GetDistanceToTarget() >= MaxChaseRange && MonsterState != State.Return)
                 Sleep();
+
+            if (PhysicsObj.MovementManager.MoveToManager.FailProgressCount > 0 && Timers.RunningTime > NextCancelTime)
+                CancelMoveTo();
         }
 
         public static bool ForcePos = true;
@@ -424,6 +433,23 @@ namespace ACE.Server.WorldObjects
 
             PhysicsObj.MoveToPosition(new Physics.Common.Position(home), GetMovementParameters());
             IsMoving = true;
+        }
+
+        public void CancelMoveTo()
+        {
+            //Console.WriteLine($"{Name}.CancelMoveTo()");
+
+            PhysicsObj.MovementManager.MoveToManager.CancelMoveTo(WeenieError.ActionCancelled);
+            PhysicsObj.MovementManager.MoveToManager.FailProgressCount = 0;
+
+            EnqueueBroadcastMotion(new Motion(CurrentMotionState.Stance, MotionCommand.Ready));
+
+            IsMoving = false;
+            NextMoveTime = Timers.RunningTime + 1.0f;
+
+            ResetAttack();
+
+            FindNextTarget();
         }
     }
 }

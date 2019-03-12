@@ -72,7 +72,7 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
-        /// Returns the Mana Conversion skill modifier for the primary weapon
+        /// Returns the Mana Conversion skill modifier for the current weapon
         /// </summary>
         public static float GetWeaponManaConversionModifier(Creature wielder)
         {
@@ -85,7 +85,7 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
-        /// Returns the Melee Defense skill modifier for the primary weapon
+        /// Returns the Melee Defense skill modifier for the current weapon
         /// </summary>
         public static float GetWeaponMeleeDefenseModifier(Creature wielder)
         {
@@ -94,15 +94,21 @@ namespace ACE.Server.WorldObjects
             if (weapon == null)
                 return defaultBonusModifier;
 
-            // always aura?
             if (wielder.CombatMode != CombatMode.NonCombat)
-                return (float)(weapon.GetProperty(PropertyFloat.WeaponDefense) ?? defaultBonusModifier) + wielder.EnchantmentManager.GetDefenseMod();
+            {
+                var defenseMod = (float)(weapon.GetProperty(PropertyFloat.WeaponDefense) + weapon.EnchantmentManager.GetDefenseMod() ?? defaultBonusModifier);
+
+                if (weapon.IsEnchantable)
+                    defenseMod += wielder.EnchantmentManager.GetDefenseMod();
+
+                return defenseMod;
+            }
 
             return defaultBonusModifier;
         }
 
         /// <summary>
-        /// Returns the attack skill modifier for the primary weapon
+        /// Returns the attack skill modifier for the current weapon
         /// </summary>
         public static float GetWeaponOffenseModifier(Creature wielder)
         {
@@ -111,17 +117,23 @@ namespace ACE.Server.WorldObjects
             if (weapon == null)
                 return defaultBonusModifier;
 
-            // always aura?
             if (wielder.CombatMode != CombatMode.NonCombat)
-                return (float)(weapon.GetProperty(PropertyFloat.WeaponOffense) ?? defaultBonusModifier) + wielder.EnchantmentManager.GetAttackMod();
+            {
+                var offenseMod = (float)(weapon.GetProperty(PropertyFloat.WeaponOffense) + weapon.EnchantmentManager.GetAttackMod() ?? defaultBonusModifier);
+
+                if (weapon.IsEnchantable)
+                    offenseMod += wielder.EnchantmentManager.GetAttackMod();
+
+                return offenseMod;
+            }
 
             return defaultBonusModifier;
         }
 
         /// <summary>
-        /// Returns the critical chance modifier for the primary weapon
+        /// Returns the critical chance modifier for the current weapon
         /// </summary>
-        public static float GetWeaponPhysicalCritFrequencyModifier(Creature wielder, CreatureSkill skill)
+        public static float GetWeaponCritChanceModifier(Creature wielder, CreatureSkill skill, Creature target)
         {
             WorldObject weapon = GetWeapon(wielder as Player);
 
@@ -130,12 +142,23 @@ namespace ACE.Server.WorldObjects
 
             var critRateMod = (float)(weapon.GetProperty(PropertyFloat.CriticalFrequency) ?? defaultPhysicalCritFrequency);
 
+            // multipliers before additives?
+            var chanceRatingMod = Creature.GetPositiveRatingMod(wielder.CritRating ?? 0);
+            critRateMod *= chanceRatingMod;
+
             // TODO: handle AlwaysCritical upstream
             if (weapon.HasImbuedEffect(ImbuedEffectType.CriticalStrike))
             {
                 var criticalStrikeMod = GetCriticalStrikeMod(skill);
                 critRateMod += criticalStrikeMod;
             }
+
+            if (wielder is Player player && player.AugmentationCriticalExpertise > 0)
+                critRateMod += player.AugmentationCriticalExpertise * 0.01f;
+
+            // mitigation
+            var chanceResistRatingMod = Creature.GetNegativeRatingMod(target.CritResistRating ?? 0);
+            critRateMod *= chanceResistRatingMod;
 
             // 50% cap here, or only in criticalStrikeMod?
             critRateMod = Math.Min(critRateMod, 0.5f);
@@ -159,9 +182,9 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
-        /// Returns the magic critical chance modifier for the primary weapon
+        /// Returns the magic critical chance modifier for the current weapon
         /// </summary>
-        public static float GetWeaponMagicCritFrequencyModifier(Creature wielder, CreatureSkill skill)
+        public static float GetWeaponMagicCritFrequencyModifier(Creature wielder, CreatureSkill skill, Creature target)
         {
             WorldObject weapon = GetWeapon(wielder as Player);
 
@@ -170,12 +193,23 @@ namespace ACE.Server.WorldObjects
 
             var critRateMod = (float)(weapon.GetProperty(PropertyFloat.CriticalFrequency) ?? defaultMagicCritFrequency);
 
+            // multipliers before additives?
+            var chanceRatingMod = Creature.GetPositiveRatingMod(wielder.CritRating ?? 0);
+            critRateMod *= chanceRatingMod;
+
             // TODO: handle AlwaysCritical upstream
             if (weapon.HasImbuedEffect(ImbuedEffectType.CriticalStrike) && skill != null)
             {
                 var criticalStrikeMod = GetCriticalStrikeMod(skill);
                 critRateMod += criticalStrikeMod;
             }
+
+            if (wielder is Player player && player.AugmentationCriticalExpertise > 0)
+                critRateMod += player.AugmentationCriticalExpertise * 0.01f;
+
+            // mitigation
+            var chanceResistRatingMod = Creature.GetNegativeRatingMod(target.CritResistRating ?? 0);
+            critRateMod *= chanceResistRatingMod;
 
             // 50% cap here, or only in criticalStrikeMod?
             critRateMod = Math.Min(critRateMod, 0.5f);
@@ -184,9 +218,9 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
-        /// Returns the critical damage multiplier for the primary weapon
+        /// Returns the critical damage multiplier for the current weapon
         /// </summary>
-        public static float GetWeaponCritMultiplierModifier(Creature wielder, CreatureSkill skill)
+        public static float GetWeaponCritDamageMod(Creature wielder, CreatureSkill skill, Creature target)
         {
             WorldObject weapon = GetWeapon(wielder as Player);
 
@@ -195,11 +229,22 @@ namespace ACE.Server.WorldObjects
 
             var critDamageMod = (float)(weapon.GetProperty(PropertyFloat.CriticalMultiplier) ?? defaultCritMultiplier);
 
+            // multipliers before additive?
+            var critDamageRatingMod = Creature.GetPositiveRatingMod(wielder.CritDamageRating ?? 0);
+            critDamageMod *= critDamageRatingMod;
+
             if (weapon.HasImbuedEffect(ImbuedEffectType.CripplingBlow))
             {
                 var cripplingBlowMod = GetCripplingBlowMod(skill);
                 critDamageMod += cripplingBlowMod;      // additive float?
             }
+
+            if (wielder is Player player && player.AugmentationCriticalPower > 0)
+                critDamageMod += player.AugmentationCriticalPower * 0.03f;
+
+            // mitigation
+            var critDamageResistRatingMod = Creature.GetNegativeRatingMod(target.CritDamageResistRating ?? 0);
+            critDamageMod *= critDamageResistRatingMod;
 
             // caps at 6x upstream?
             critDamageMod = Math.Min(critDamageMod, 5.0f);
@@ -208,7 +253,7 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
-        /// Returns the slayer 2x+ damage bonus for the primary weapon
+        /// Returns the slayer 2x+ damage bonus for the current weapon
         /// against a particular creature type
         /// </summary>
         public static float GetWeaponCreatureSlayerModifier(Creature wielder, Creature target)
@@ -245,7 +290,6 @@ namespace ACE.Server.WorldObjects
                 var elementalDamageModType = weapon.GetProperty(PropertyInt.DamageType) ?? (int)DamageType.Undef;
                 if (elementalDamageModType != (int)DamageType.Undef && elementalDamageModType == (int)damageType)
                 {
-                    // TODO: Add EnchantmentManager buff/debuff from Spirit Drinker/Loather
                     var casterElementalDmgMod = (float)(weapon.GetProperty(PropertyFloat.ElementalDamageMod) ?? modifier) + wielder.EnchantmentManager.GetElementalDamageMod();
                     if (casterElementalDmgMod > modifier)
                     {
@@ -339,6 +383,8 @@ namespace ACE.Server.WorldObjects
                     return ImbuedEffectType.AcidRending;
                 case DamageType.Electric:
                     return ImbuedEffectType.ElectricRending;
+                case DamageType.Nether:
+                    return ImbuedEffectType.Undef;  // none?
                 default:
                     Console.WriteLine($"GetRendDamageType({damageType}) unexpected damage type");
                     return ImbuedEffectType.Undef;
@@ -558,6 +604,7 @@ namespace ACE.Server.WorldObjects
                 case Skill.HeavyWeapons:
                 case Skill.FinesseWeapons:
                 case Skill.DualWield:
+                case Skill.TwoHandedCombat:
 
                 // legacy
                 case Skill.Axe:

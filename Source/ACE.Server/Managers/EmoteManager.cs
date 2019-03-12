@@ -4,6 +4,8 @@ using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 
+using ACE.Common.Extensions;
+using ACE.Database;
 using ACE.Database.Models.Shard;
 using ACE.DatLoader;
 using ACE.Entity;
@@ -103,13 +105,13 @@ namespace ACE.Server.Managers
                 case EmoteType.AwardLevelProportionalSkillXP:
 
                     if (player != null)
-                        player.GrantLevelProportionalSkillXP((Skill)emote.Stat, emote.Percent ?? 0, (ulong)emote.Max);
+                        player.GrantLevelProportionalSkillXP((Skill)emote.Stat, emote.Percent ?? 0, (ulong)emote.Max64);
                     break;
 
                 case EmoteType.AwardLevelProportionalXP:
 
                     if (player != null)
-                        player.GrantLevelProportionalXp(emote.Percent ?? 0, (ulong)emote.Max);
+                        player.GrantLevelProportionalXp(emote.Percent ?? 0, (ulong)emote.Max64);
                     break;
 
                 case EmoteType.AwardLuminance:
@@ -160,7 +162,7 @@ namespace ACE.Server.Managers
 
                 case EmoteType.CastSpell:
 
-                    if (creature != null && targetObject != null)
+                    if (WorldObject != null && targetObject != null)
                     {
                         var spell = new Spell((uint)emote.SpellId);
                         if (spell != null)
@@ -182,11 +184,11 @@ namespace ACE.Server.Managers
 
                 case EmoteType.CastSpellInstant:
 
-                    if (creature != null)
+                    if (WorldObject != null)
                     {
                         var spell = new Spell((uint)emote.SpellId);
                         if (spell != null)
-                            creature.TryCastSpell(spell, targetObject, creature);
+                            WorldObject.TryCastSpell(spell, targetObject, WorldObject);
                     }
                     break;
 
@@ -239,7 +241,31 @@ namespace ACE.Server.Managers
                     text = Replace(emote.Message, WorldObject, targetObject);
 
                     if (player != null)
+                    {
+                        if ((emote.Message).EndsWith("@%tqt", StringComparison.Ordinal))
+                        {
+                            var questName = QuestManager.GetQuestName(emote.Message);
+                            var remainStr = player.QuestManager.GetNextSolveTime(questName).GetFriendlyString();
+                            text = $"{questName}: {remainStr}";
+                        }
+                        else if ((emote.Message).Contains("%CDtime"))
+                        {
+                            var questName = QuestManager.GetQuestName(emote.Message);
+                            TimeSpan timeSpan = player.QuestManager.GetNextSolveTime(questName);
+                            string buffer = (emote.Message).Split("@")[1];
+
+                            string time = $"{timeSpan.Minutes} minutes";
+
+                            if (timeSpan.Hours > 0)
+                                time = time.Insert(0, $"{timeSpan.Hours} hours and ");
+
+                            text = buffer.Replace("%CDtime", time);
+                        }
+                        else
+                            text = Replace(emote.Message, WorldObject, targetObject);
+
                         player.Session.Network.EnqueueSend(new GameMessageSystemChat(text, ChatMessageType.Broadcast));     // CreatureMessage / HearDirectSpeech?
+                    }
                     break;
 
                 case EmoteType.EraseMyQuest:
@@ -274,10 +300,8 @@ namespace ACE.Server.Managers
 
                 case EmoteType.Generate:
 
-                    // unfinished - unused in PY16?
-                    var wcid = (uint)emote.WeenieClassId;
-                    var item = WorldObjectFactory.CreateNewWorldObject(wcid);
-
+                    if (WorldObject.IsGenerator)
+                        WorldObject.Generator_HeartBeat();
                     break;
 
                 case EmoteType.Give:
@@ -285,12 +309,12 @@ namespace ACE.Server.Managers
                     bool success = false;
                     if (player != null && emote.WeenieClassId != null)
                     {
-                        item = WorldObjectFactory.CreateNewWorldObject((uint)emote.WeenieClassId);
+                        var item = WorldObjectFactory.CreateNewWorldObject((uint)emote.WeenieClassId);
                         var stackSize = emote.StackSize ?? 1;
                         var stackMsg = "";
                         if (stackSize > 1)
                         {
-                            item.StackSize = (ushort)stackSize;
+                            item.SetStackSize(stackSize);
                             stackMsg = stackSize + " ";     // pluralize?
                         }
                         success = player.TryCreateInInventoryWithNetworking(item);
@@ -435,8 +459,17 @@ namespace ACE.Server.Managers
 
                 case EmoteType.InqOwnsItems:
 
-                    //if (player != null)
-                    //InqCategory(player.Inventory.Count > 0 ? EmoteCategory.TestSuccess : EmoteCategory.TestFailure, emote);
+                    if (player != null)
+					{
+                        var numRequired = emote.StackSize ?? 1;
+
+                        var items = player.GetInventoryItemsOfWCID(emote.WeenieClassId ?? 0);
+                        var numItems = items.Sum(i => i.StackSize ?? 1);
+
+                        success = numItems >= numRequired;
+
+                        ExecuteEmoteSet(success ? EmoteCategory.TestSuccess : EmoteCategory.TestFailure, emote.Message, targetObject, true);
+                    }
                     break;
 
                 case EmoteType.InqPackSpace:
@@ -566,7 +599,14 @@ namespace ACE.Server.Managers
                     break;
 
                 case EmoteType.InqYesNo:
-                    ConfirmationManager.ProcessConfirmation((uint)emote.Stat, true);
+
+                    if (player != null)
+                    {
+                        var confirm = new Confirmation(ConfirmationType.Yes_No, emote.TestString, WorldObject, null, player, emote.Message);
+                        ConfirmationManager.AddConfirmation(confirm);
+
+                        player.Session.Network.EnqueueSend(new GameEventConfirmationRequest(player.Session, ConfirmationType.Yes_No, confirm.ConfirmationID, emote.TestString));
+                    }
                     break;
 
                 case EmoteType.Invalid:
@@ -605,6 +645,8 @@ namespace ACE.Server.Managers
                 /* plays an animation on the source object */
                 case EmoteType.Motion:
 
+                    var debugMotion = false;
+
                     if (Debug)
                         Console.Write($".{(MotionCommand)emote.Motion}");
 
@@ -624,8 +666,8 @@ namespace ACE.Server.Managers
                         {
                             if (WorldObject.CurrentMotionState.Stance == MotionStance.Invalid)
                             {
-                                //if (Debug)
-                                //Console.WriteLine($"{WorldObject.Name} running starting motion {(MotionStance)emoteSet.Style}, {(MotionCommand)emoteSet.Substyle}");
+                                if (debugMotion)
+                                    Console.WriteLine($"{WorldObject.Name} running starting motion {(MotionStance)emoteSet.Style}, {(MotionCommand)emoteSet.Substyle}");
 
                                 delay = WorldObject.ExecuteMotion(startingMotion);
                             }
@@ -634,8 +676,8 @@ namespace ACE.Server.Managers
                         {
                             if (WorldObject.CurrentMotionState.MotionState.ForwardCommand == startingMotion.MotionState.ForwardCommand)
                             {
-                                //if (Debug)
-                                //Console.WriteLine($"{WorldObject.Name} running motion {(MotionStance)emoteSet.Style}, {(MotionCommand)emote.Motion}");
+                                if (debugMotion)
+                                    Console.WriteLine($"{WorldObject.Name} running motion {(MotionStance)emoteSet.Style}, {(MotionCommand)emote.Motion}");
 
                                 float? maxRange = ClientMaxAnimRange;
                                 if (MotionQueue.Contains((MotionCommand)emote.Motion))
@@ -650,26 +692,20 @@ namespace ACE.Server.Managers
                                 motionChain.AddDelaySeconds(animLength);
                                 motionChain.AddAction(WorldObject, () =>
                                 {
-                                    // FIXME: this needs to be figured out better
-                                    var cycles = new List<MotionCommand>()
+                                    // FIXME: better cycle handling
+                                    var cmd = WorldObject.CurrentMotionState.MotionState.ForwardCommand;
+                                    if (cmd != MotionCommand.Sleeping && cmd != MotionCommand.Sitting && !cmd.ToString().EndsWith("State"))
                                     {
-                                        MotionCommand.Sleeping,
-                                        MotionCommand.Sitting,
-                                        MotionCommand.SnowAngelState
-                                    };
-
-                                    if (!cycles.Contains(WorldObject.CurrentMotionState.MotionState.ForwardCommand))
-                                    {
-                                        //if (Debug)
-                                        //Console.WriteLine($"{WorldObject.Name} running starting motion again {(MotionStance)emoteSet.Style}, {(MotionCommand)emoteSet.Substyle}");
+                                        if (debugMotion)
+                                            Console.WriteLine($"{WorldObject.Name} running starting motion again {(MotionStance)emoteSet.Style}, {(MotionCommand)emoteSet.Substyle}");
 
                                         WorldObject.ExecuteMotion(startingMotion);
                                     }
                                 });
                                 motionChain.EnqueueChain();
 
-                                //if (Debug)
-                                //Console.WriteLine($"{WorldObject.Name} appending time to existing chain: " + animLength);
+                                if (debugMotion)
+                                    Console.WriteLine($"{WorldObject.Name} appending time to existing chain: " + animLength);
                             }
                         }
                     }
@@ -682,8 +718,8 @@ namespace ACE.Server.Managers
 
                         motion = new Motion(MotionStance.NonCombat, (MotionCommand)emote.Motion, emote.Extent);
 
-                        //if (Debug)
-                        //Console.WriteLine($"{WorldObject.Name} running motion (block 2) {MotionStance.NonCombat}, {(MotionCommand)(emote.Motion ?? 0)}");
+                        if (debugMotion)
+                            Console.WriteLine($"{WorldObject.Name} running motion (block 2) {MotionStance.NonCombat}, {(MotionCommand)(emote.Motion ?? 0)}");
 
                         delay = WorldObject.ExecuteMotion(motion);
 
@@ -791,7 +827,7 @@ namespace ACE.Server.Managers
                 case EmoteType.PopUp:
                     if (player != null)
                     {
-                        if ((ConfirmationType)emote.Stat == ConfirmationType.Undefined)
+                        if ((emote.Stat == null) || ((ConfirmationType)emote.Stat == ConfirmationType.Undefined))
                             player.Session.Network.EnqueueSend(new GameEventPopupString(player.Session, emote.Message));
                         else
                         {
@@ -892,6 +928,11 @@ namespace ACE.Server.Managers
                 case EmoteType.SetQuestBitsOn:
                     break;
                 case EmoteType.SetQuestCompletions:
+                    if (player != null)
+                    {
+                        if (emote.Amount != null)
+                            player.QuestManager.SetQuestCompletions(emote.Message, (int)emote.Amount);
+                    }
                     break;
                 case EmoteType.SetSanctuaryPosition:
 
@@ -917,7 +958,33 @@ namespace ACE.Server.Managers
 
                     // work needs to be done here
                     if (player != null)
-                        player.QuestManager.Stamp(emote.Message);
+                    {
+                        if ((emote.Message).EndsWith("@#kt", StringComparison.Ordinal))
+                        {
+                            var hasQuest = player.QuestManager.HasQuest(emote.Message);
+                            if (hasQuest)
+                            {
+                                player.QuestManager.Stamp(emote.Message);
+
+                                var questName = QuestManager.GetQuestName(emote.Message);
+                                var quest = DatabaseManager.World.GetCachedQuest(questName);
+
+                                var playerQuest = player.QuestManager.Quests.FirstOrDefault(q => q.QuestName.Equals(questName, StringComparison.OrdinalIgnoreCase));
+
+                                if (playerQuest != null)
+                                {
+                                    var isMaxSolves = player.QuestManager.IsMaxSolves(questName);
+                                    if (isMaxSolves)
+                                        text = $"You have killed {quest.MaxSolves} {WorldObject.Name}s. Your task is complete!";
+                                    else
+                                        text = $"You have killed {playerQuest.NumTimesCompleted} {WorldObject.Name}s. You must kill {quest.MaxSolves} to complete your task!";
+                                    player.Session.Network.EnqueueSend(new GameMessageSystemChat(text, ChatMessageType.Broadcast));
+                                }
+                            }
+                        }
+                        else
+                            player.QuestManager.Stamp(emote.Message);
+                    }
                     break;
 
                 case EmoteType.StartBarber:
@@ -935,12 +1002,20 @@ namespace ACE.Server.Managers
 
                 case EmoteType.TakeItems:
 
-                    if (player != null && emote.WeenieClassId != null)
+                    if (player != null)
                     {
-                        item = WorldObjectFactory.CreateNewWorldObject((uint)emote.WeenieClassId);
-                        if (item == null) break;
+                        var items = player.GetInventoryItemsOfWCID(emote.WeenieClassId ?? 0);
 
-                        success = player.TryConsumeFromInventoryWithNetworking(item, emote.Amount ?? 0);
+                        var leftReq = emote.StackSize ?? 0;
+                        foreach (var item in items)
+                        {
+                            var removeNum = Math.Min(leftReq, item.StackSize ?? 1);
+                            player.TryConsumeFromInventoryWithNetworking(item, removeNum);
+
+                            leftReq -= removeNum;
+                            if (leftReq <= 0)
+                                break;
+                        }
                     }
                     break;
 
@@ -1034,17 +1109,25 @@ namespace ACE.Server.Managers
                     break;
                 case EmoteType.UpdateQuest:
 
-                    // is this only for solving??
-
-                    // only delay seems to be with test NPC here
-                    // still, unsafe to use any emotes directly outside of a chain,
-                    // as they could be executed out-of-order
                     if (player != null)
                     {
                         var questName = emote.Message;
-                        player.QuestManager.Update(questName);
+
                         var hasQuest = player.QuestManager.HasQuest(questName);
-                        ExecuteEmoteSet(hasQuest ? EmoteCategory.QuestSuccess : EmoteCategory.QuestFailure, emote.Message, targetObject, true);
+
+                        if (!hasQuest)
+                        {
+                            // add new quest
+                            player.QuestManager.Update(questName);
+                            hasQuest = player.QuestManager.HasQuest(questName);
+                            ExecuteEmoteSet(hasQuest ? EmoteCategory.QuestSuccess : EmoteCategory.QuestFailure, emote.Message, targetObject, true);
+                        }
+                        else
+                        {
+                            // update existing quest
+                            var canSolve = player.QuestManager.CanSolve(questName);
+                            ExecuteEmoteSet(canSolve ? EmoteCategory.QuestSuccess : EmoteCategory.QuestFailure, emote.Message, targetObject, true);
+                        }
                     }
                     break;
 
@@ -1273,6 +1356,14 @@ namespace ACE.Server.Managers
         public void OnKill(Player player)
         {
             ExecuteEmoteSet(EmoteCategory.KillTaunt, null, player);
+        }
+
+        /// <summary>
+        /// Called when this NPC receives a direct text message from a player
+        /// </summary>
+        public void OnTalkDirect(Player player, string message)
+        {
+            ExecuteEmoteSet(EmoteCategory.ReceiveTalkDirect, message, player);
         }
     }
 }

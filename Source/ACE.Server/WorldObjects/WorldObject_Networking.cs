@@ -132,7 +132,7 @@ namespace ACE.Server.WorldObjects
                 writer.Write((uint?)CurrentWieldedLocation ?? 0u);
 
             if ((weenieFlags & WeenieHeaderFlag.Priority) != 0)
-                writer.Write((uint?)Priority ?? 0u);
+                writer.Write((uint?)ClothingPriority ?? 0u);
 
             if ((weenieFlags & WeenieHeaderFlag.RadarBlipColor) != 0)
                 writer.Write((byte?)RadarColor ?? 0);
@@ -171,13 +171,7 @@ namespace ACE.Server.WorldObjects
                 // send the permissions from the outdoor house
                 if (house.CurrentLandblock.IsDungeon)
                 {
-                    var biota = DatabaseManager.Shard.GetBiotasByWcid(WeenieClassId).FirstOrDefault(b => b.BiotaPropertiesPosition.FirstOrDefault(p => p.PositionType == (ushort)PositionType.Location).ObjCellId >> 16 != Location.Landblock);
-                    if (biota != null)
-                    {
-                        var outdoorHouseGuid = biota.Id;
-                        house = House.Load(outdoorHouseGuid);
-                        house.BuildGuests();
-                    }
+                    house = house.RootHouse;
                 }
                 else
                 {
@@ -193,7 +187,7 @@ namespace ACE.Server.WorldObjects
                 writer.Write((uint?)HookItemType ?? 0);
 
             if ((weenieFlags & WeenieHeaderFlag.Monarch) != 0)
-                writer.Write(Monarch ?? 0);
+                writer.Write(MonarchId ?? 0);
 
             if ((weenieFlags & WeenieHeaderFlag.HookType) != 0)
                 writer.Write(HookType ?? 0);
@@ -722,7 +716,7 @@ namespace ACE.Server.WorldObjects
             if ((CurrentWieldedLocation != null) && (CurrentWieldedLocation != 0) && (WielderId != null) && (WielderId != 0))
                 weenieHeaderFlag |= WeenieHeaderFlag.CurrentlyWieldedLocation;
 
-            if (Priority != null)
+            if (ClothingPriority != null)
                 weenieHeaderFlag |= WeenieHeaderFlag.Priority;
 
             if (RadarColor != null)
@@ -761,7 +755,7 @@ namespace ACE.Server.WorldObjects
             if (hookItemTypeInt != null)
                 weenieHeaderFlag |= WeenieHeaderFlag.HookItemTypes;
 
-            if (Monarch != null)
+            if (MonarchId != null)
                 weenieHeaderFlag |= WeenieHeaderFlag.Monarch;
 
             if (HookType != null)
@@ -1185,7 +1179,8 @@ namespace ACE.Server.WorldObjects
                     continue;
 
                 //var dist = Vector3.Distance(Location.ToGlobal(), player.Location.ToGlobal());
-                var distSquared = Vector3.DistanceSquared(Location.ToGlobal(), player.Location.ToGlobal());
+                //var distSquared = Vector3.DistanceSquared(Location.ToGlobal(), player.Location.ToGlobal());
+                var distSquared = Location.SquaredDistanceTo(player.Location);
                 if (distSquared <= rangeSquared)
                     return true;
             }
@@ -1196,12 +1191,16 @@ namespace ACE.Server.WorldObjects
         /// Sends network messages to all Players who currently know about this object
         /// within a maximum range
         /// </summary>
-        public void EnqueueBroadcast(GameMessage msg, float range)
+        public void EnqueueBroadcast(GameMessage msg, float range, bool useSquelch = false)
         {
             if (PhysicsObj == null || CurrentLandblock == null) return;
 
-            if (this is Player self)
+            Player self = null;
+            if (this is Player)
+            {
+                self = this as Player;
                 self.Session.Network.EnqueueSend(msg);
+            }
 
             var isDungeon = CurrentLandblock._landblock != null && CurrentLandblock._landblock.IsDungeon;
 
@@ -1209,6 +1208,9 @@ namespace ACE.Server.WorldObjects
 
             foreach (var player in PhysicsObj.ObjMaint.VoyeurTable.Values.Select(v => (Player)v.WeenieObj.WorldObject))
             {
+                if (self != null && useSquelch && player.Squelches.Contains(self))
+                    continue;
+
                 if (isDungeon && Location.Landblock != player.Location.Landblock)
                     continue;
 
@@ -1216,7 +1218,8 @@ namespace ACE.Server.WorldObjects
                     continue;
 
                 //var dist = Vector3.Distance(Location.ToGlobal(), player.Location.ToGlobal());
-                var distSquared = Vector3.DistanceSquared(Location.ToGlobal(), player.Location.ToGlobal());
+                //var distSquared = Vector3.DistanceSquared(Location.ToGlobal(), player.Location.ToGlobal());
+                var distSquared = Location.SquaredDistanceTo(player.Location);
                 if (distSquared <= rangeSquared)
                     player.Session.Network.EnqueueSend(msg);
             }
@@ -1285,6 +1288,9 @@ namespace ACE.Server.WorldObjects
             // add to player tracking / send create object network messages to these players
             foreach (var player in PhysicsObj.ObjMaint.VoyeurTable.Values.Select(v => (Player)v.WeenieObj.WorldObject))
                 player.AddTrackedObject(this);
+
+            if (this is Creature creature && !(this is Player))
+                creature.CheckPlayers();
         }
     }
 }

@@ -184,5 +184,45 @@ namespace ACE.Server.Entity
             }
             return wcid;
         }
+
+        public Skill GetMagicSkill()
+        {
+            switch (School)
+            {
+                case MagicSchool.CreatureEnchantment: return Skill.CreatureEnchantment;
+                case MagicSchool.ItemEnchantment:     return Skill.ItemEnchantment;
+                case MagicSchool.LifeMagic:           return Skill.LifeMagic;
+                case MagicSchool.WarMagic:            return Skill.WarMagic;
+                case MagicSchool.VoidMagic:           return Skill.VoidMagic;
+            }
+            return Skill.None;
+        }
+
+        public bool IsPortalSpell
+        {
+            get
+            {
+                return MetaSpellType == SpellType.PortalLink
+                    || MetaSpellType == SpellType.PortalRecall
+                    || MetaSpellType == SpellType.PortalSending
+                    || MetaSpellType == SpellType.PortalSummon;
+            }
+        }
+
+        /// <summary>
+        /// Handles forward compatibility for old item spells which should be auras
+        /// </summary>
+        public bool HasItemCategory
+        {
+            get
+            {
+                return Category == SpellCategory.AttackModRaising
+                    || Category == SpellCategory.DamageRaising
+                    || Category == SpellCategory.DefenseModRaising
+                    || Category == SpellCategory.WeaponTimeRaising
+                    || Category == SpellCategory.AppraisalResistanceLowering
+                    || Category == SpellCategory.SpellDamageRaising;
+            }
+        }
     }
 }

@@ -1,12 +1,15 @@
 using System;
 using System.Collections.Generic;
+
 using ACE.Database;
 using ACE.Database.Models.Shard;
 using ACE.Database.Models.World;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Server.Entity;
 using ACE.Server.Managers;
+using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
 
 namespace ACE.Server.WorldObjects
@@ -16,6 +19,42 @@ namespace ACE.Server.WorldObjects
     /// </summary>
     public class PetDevice : WorldObject
     {
+        public int? GearDamage
+        {
+            get => GetProperty(PropertyInt.GearDamage);
+            set { if (value.HasValue) SetProperty(PropertyInt.GearDamage, value.Value); else RemoveProperty(PropertyInt.GearDamage); }
+        }
+
+        public int? GearDamageResist
+        {
+            get => GetProperty(PropertyInt.GearDamageResist);
+            set { if (value.HasValue) SetProperty(PropertyInt.GearDamageResist, value.Value); else RemoveProperty(PropertyInt.GearDamageResist); }
+        }
+
+        public int? GearCritDamage
+        {
+            get => GetProperty(PropertyInt.GearCritDamage);
+            set { if (value.HasValue) SetProperty(PropertyInt.GearCritDamage, value.Value); else RemoveProperty(PropertyInt.GearCritDamage); }
+        }
+
+        public int? GearCritDamageResist
+        {
+            get => GetProperty(PropertyInt.GearCritDamageResist);
+            set { if (value.HasValue) SetProperty(PropertyInt.GearCritDamageResist, value.Value); else RemoveProperty(PropertyInt.GearCritDamageResist); }
+        }
+
+        public int? GearCrit
+        {
+            get => GetProperty(PropertyInt.GearCrit);
+            set { if (value.HasValue) SetProperty(PropertyInt.GearCrit, value.Value); else RemoveProperty(PropertyInt.GearCrit); }
+        }
+
+        public int? GearCritResist
+        {
+            get => GetProperty(PropertyInt.GearCritResist);
+            set { if (value.HasValue) SetProperty(PropertyInt.GearCritResist, value.Value); else RemoveProperty(PropertyInt.GearCritResist); }
+        }
+
         /// <summary>
         /// A new biota be created taking all of its values from weenie.
         /// </summary>
@@ -39,25 +78,17 @@ namespace ACE.Server.WorldObjects
         {
         }
 
-        public override void UseItem(Player player)
+        public override void ActOnUse(WorldObject activator)
         {
+            if (!(activator is Player player))
+                return;
+
             // Good PCAP example of using a PetDevice to summon a pet:
             // Asherons-Call-packets-includes-3-towers\pkt_2017-1-30_1485823896_log.pcap lines 27837 - 27843
 
             if (!PetDeviceToPetMapping.TryGetValue(WeenieClassId, out var petData))
             {
                 Console.WriteLine($"PetDevice.UseItem(): couldn't find a matching pet for essence wcid {WeenieClassId}");
-                player.SendUseDoneEvent();
-                return;
-            }
-
-            if (!CheckRequirements(player))
-                return;
-
-            if (!player.CheckCooldown(this))
-            {
-                // 'You have used this item too recently' error message?
-                player.SendUseDoneEvent();  
                 return;
             }
 
@@ -66,9 +97,6 @@ namespace ACE.Server.WorldObjects
 
             if (SummonCreature(player, wcid, damageType))
             {
-                // track usage for cooldown
-                player.UpdateCooldown(this);
-
                 // decrease remaining uses
                 if (--Structure <= 0)
                     player.TryConsumeFromInventoryWithNetworking(this, 1);
@@ -79,44 +107,29 @@ namespace ACE.Server.WorldObjects
             {
                 // this would be a good place to send a friendly reminder to install the latest summoning updates from ACE-World-Patch
             }
-
-            player.SendUseDoneEvent();
         }
 
-        public bool CheckRequirements(Player player)
+        public override ActivationResult CheckUseRequirements(WorldObject activator)
         {
-            // verify player level
-            if (UseRequiresLevel != null && player.Level.Value < UseRequiresLevel)
-            {
-                player.SendUseDoneEvent(WeenieError.SkillTooLow);
-                return false;
-            }
+            if (!(activator is Player player))
+                return new ActivationResult(false);
 
-            // verify summoning skill
-            var summoning = player.GetCreatureSkill(Skill.Summoning);
-            if (summoning.AdvancementClass < SkillAdvancementClass.Trained)
-            {
-                player.SendUseDoneEvent(WeenieError.SkillTooLow);
-                return false;
-            }
-            if (UseRequiresSkillLevel != null && summoning.Current < UseRequiresSkillLevel)
-            {
-                player.SendUseDoneEvent(WeenieError.SkillTooLow);
-                return false;
-            }
+            var baseRequirements = base.CheckUseRequirements(activator);
+            if (!baseRequirements.Success)
+                return baseRequirements;
 
-            // verify summoning specialization
-            if (summoning.AdvancementClass < SkillAdvancementClass.Specialized && UseRequiresSkillSpec == (int)Skill.Summoning)
+            // cooldowns for gems and pet devices, anything else?
+
+            // should this verification be in base CheckUseRequirements?
+            if (!player.EnchantmentManager.CheckCooldown(CooldownId))
             {
-                player.SendUseDoneEvent(WeenieError.SkillTooLow);
-                return false;
+                player.Session.Network.EnqueueSend(new GameEventCommunicationTransientString(player.Session, "You have used this item too recently"));
+                return new ActivationResult(false);
             }
 
             // TODO: limit non-golems to summoning mastery
 
-            // TODO: verify error messages w/ retail
-
-            return true;
+            return new ActivationResult(true);
         }
 
         public bool SummonCreature(Player player, uint wcid, DamageType damageType)
@@ -130,13 +143,15 @@ namespace ACE.Server.WorldObjects
                 Console.WriteLine($"Couldn't find pet wcid #{wcid}");
                 return false;
             }
+            player.EnchantmentManager.StartCooldown(this);
+
             var combatPet = new CombatPet(weenie, GuidManager.NewDynamicGuid());
             if (combatPet == null)
             {
                 Console.WriteLine($"PetDevice.UseItem(): failed to create pet for wcid {wcid}");
                 return false;
             }
-            combatPet.Init(player, damageType);
+            combatPet.Init(player, damageType, this);
             return true;
         }
 

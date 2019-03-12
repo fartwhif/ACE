@@ -13,7 +13,6 @@ using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.Structure;
 using ACE.Server.Physics;
-using ACE.Server.Physics.Extensions;
 using ACE.Server.WorldObjects;
 using ACE.Server.WorldObjects.Entity;
 
@@ -64,9 +63,9 @@ namespace ACE.Server.Managers
         /// <summary>
         /// Returns the enchantments for a specific spell
         /// </summary>
-        public BiotaPropertiesEnchantmentRegistry GetEnchantment(uint spellID)
+        public BiotaPropertiesEnchantmentRegistry GetEnchantment(uint spellID, uint? casterGuid = null)
         {
-            return WorldObject.Biota.GetEnchantmentBySpell((int)spellID, WorldObject.BiotaDatabaseLock);
+            return WorldObject.Biota.GetEnchantmentBySpell((int)spellID, casterGuid, WorldObject.BiotaDatabaseLock);
         }
 
         /// <summary>
@@ -85,6 +84,12 @@ namespace ACE.Server.Managers
             {
                 var spell = new Spell(enchantment.SpellId);
 
+                if (spell.NotFound)
+                {
+                    Console.WriteLine($"EnchantmentManager.GetEnchantments({magicSchool}): couldn't find spell {enchantment.SpellId} for {WorldObject.Name}");
+                    continue;
+                }
+
                 if (spell.School == magicSchool)
                     spells.Add(enchantment);
             }
@@ -95,9 +100,9 @@ namespace ACE.Server.Managers
         /// <summary>
         /// Returns all of the enchantments for a category
         /// </summary>
-        public List<BiotaPropertiesEnchantmentRegistry> GetEnchantments(uint categoryID)
+        public List<BiotaPropertiesEnchantmentRegistry> GetEnchantments(SpellCategory spellCategory)
         {
-            return WorldObject.Biota.GetEnchantmentsByCategory((ushort)categoryID, WorldObject.BiotaDatabaseLock);
+            return WorldObject.Biota.GetEnchantmentsByCategory((ushort)spellCategory, WorldObject.BiotaDatabaseLock);
         }
 
         /// <summary>
@@ -153,12 +158,11 @@ namespace ACE.Server.Managers
                 return result;
             }
 
-            result.BuildStack(entries, spell);
+            result.BuildStack(entries, spell, caster);
 
             // handle cases:
             // surpassing: new spell is written to next layer
-            // refreshing: - if creature caster, reset timer for existing spell
-            //             - if item caster, always add new layer?
+            // refreshing: - key by caster guid
             // surpassed:  - underpowered spell is written to next layer?
 
             // note that these cases are not exclusive,
@@ -166,8 +170,7 @@ namespace ACE.Server.Managers
             // for the 2nd cast of strength 3, it would have 1 refresh and 1 surpassed
             // would 2nd cast of strength 3 refresh the 1st, but still be surpassed by 6?
 
-            var refresh = result.Refresh.Count > 0 && caster is Creature;
-            var refreshSpell = refresh ? result.RefreshCreature : null;
+            var refreshSpell = result.Refresh.Count > 0 ? result.RefreshCaster : null;
 
             if (refreshSpell == null)
             {
@@ -207,7 +210,12 @@ namespace ACE.Server.Managers
             // should default duration be 0 or -1 here?
             // changed from spellBase -> spell for void..
             if (caster is Creature)
+            {
                 entry.Duration = spell.Duration;
+
+                if (caster is Player player && player.AugmentationIncreasedSpellDuration > 0)
+                    entry.Duration *= 1.0f + player.AugmentationIncreasedSpellDuration * 0.2f;
+            }
             else
             {
                 if (caster?.WeenieType == WeenieType.Gem)
@@ -234,14 +242,47 @@ namespace ACE.Server.Managers
         }
 
         /// <summary>
+        /// Adds a cooldown spell to the enchantment registry
+        /// </summary>
+        public bool StartCooldown(WorldObject item)
+        {
+            var cooldownID = item.CooldownId;
+            if (cooldownID == null)
+                return false;
+
+            var newEntry = new BiotaPropertiesEnchantmentRegistry();
+
+            // TODO: BiotaPropertiesEnchantmentRegistry.SpellId should be uint
+            newEntry.SpellId = (int)GetCooldownSpellID(cooldownID.Value);
+            newEntry.SpellCategory = SpellCategory_Cooldown;
+            newEntry.HasSpellSetId = true;
+            newEntry.Duration = item.CooldownDuration ?? 0.0f;
+            newEntry.CasterObjectId = item.Guid.Full;
+            newEntry.DegradeLimit = -666;
+            newEntry.StatModType = (uint)EnchantmentTypeFlags.Cooldown;
+            newEntry.EnchantmentCategory = (uint)EnchantmentMask.Cooldown;
+
+            newEntry.LayerId = 1;      // cooldown at layer 1, any spells at layer 2?
+            WorldObject.Biota.AddEnchantment(newEntry, WorldObject.BiotaDatabaseLock);
+            WorldObject.ChangesDetected = true;
+
+            Player.Session.Network.EnqueueSend(new GameEventMagicUpdateEnchantment(Player.Session, new Enchantment(Player, newEntry)));
+
+            return true;
+        }
+
+        /// <summary>
         /// Removes a spell from the enchantment registry, and
         /// sends the relevant network messages for spell removal
         /// </summary>
         public virtual void Remove(BiotaPropertiesEnchantmentRegistry entry, bool sound = true)
         {
+            if (entry == null)
+                return;
+
             var spellID = entry.SpellId;
 
-            if (WorldObject.Biota.TryRemoveEnchantment(spellID, out _, WorldObject.BiotaDatabaseLock))
+            if (WorldObject.Biota.TryRemoveEnchantment(entry, out _, WorldObject.BiotaDatabaseLock))
                 WorldObject.ChangesDetected = true;
 
             if (Player != null)
@@ -249,7 +290,7 @@ namespace ACE.Server.Managers
                 var layer = (entry.SpellId == (uint)SpellId.Vitae) ? (ushort)0 : entry.LayerId; // this line is to force vitae to be layer 0 to match retail pcaps. We save it as layer 1 to make EF Core happy.
                 Player.Session.Network.EnqueueSend(new GameEventMagicRemoveEnchantment(Player.Session, (ushort)entry.SpellId, layer));
 
-                if (sound)
+                if (sound && entry.SpellCategory != SpellCategory_Cooldown)
                     Player.Session.Network.EnqueueSend(new GameMessageSound(Player.Guid, Sound.SpellExpire, 1.0f));
             }
             else
@@ -285,8 +326,6 @@ namespace ACE.Server.Managers
             WorldObject.ChangesDetected = true;
         }
 
-
-
         /// <summary>
         /// Returns the vitae enchantment
         /// </summary>
@@ -300,7 +339,7 @@ namespace ACE.Server.Managers
         /// </summary>
         public float GetMinVitae(uint level)
         {
-            var propVitae = PropertyManager.GetDouble("vitae_min").Item;
+            var propVitae = 1.0 - PropertyManager.GetDouble("vitae_penalty_max").Item;
 
             var maxPenalty = (level - 1) * 3;
             if (maxPenalty < 1)
@@ -388,9 +427,12 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual void Dispel(BiotaPropertiesEnchantmentRegistry entry)
         {
+            if (entry == null)
+                return;
+
             var spellID = entry.SpellId;
 
-            if (WorldObject.Biota.TryRemoveEnchantment(spellID, out _, WorldObject.BiotaDatabaseLock))
+            if (WorldObject.Biota.TryRemoveEnchantment(entry, out _, WorldObject.BiotaDatabaseLock))
                 WorldObject.ChangesDetected = true;
 
             if (Player != null)
@@ -402,9 +444,12 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual void Dispel(List<BiotaPropertiesEnchantmentRegistry> entries)
         {
+            if (entries == null || entries.Count == 0)
+                return;
+
             foreach (var entry in entries)
             {
-                if (WorldObject.Biota.TryRemoveEnchantment(entry.SpellId, out _, WorldObject.BiotaDatabaseLock))
+                if (WorldObject.Biota.TryRemoveEnchantment(entry, out _, WorldObject.BiotaDatabaseLock))
                     WorldObject.ChangesDetected = true;
             }
 
@@ -451,6 +496,9 @@ namespace ACE.Server.Managers
             var enchantments = GetEnchantments_TopLayer(WorldObject.Biota.GetEnchantments(WorldObject.BiotaDatabaseLock));
 
             var filtered = enchantments.Where(e => e.PowerLevel <= maxPower);
+
+            // no dispel for enchantments from item sources (and vitae)
+            filtered = enchantments.Where(e => e.Duration != -1);
 
             // for dispelSchool and align,
             // we probably could do some calculations to figure out these values directly from the enchantments
@@ -621,14 +669,20 @@ namespace ACE.Server.Managers
         /// <summary>
         /// Returns the sum of the StatModValues for an EnchantmentTypeFlag
         /// </summary>
-        public int GetModifier(EnchantmentTypeFlags type)
+        public int GetModifier(EnchantmentTypeFlags type, bool? positive = null)
         {
             var enchantments = GetEnchantments_TopLayer(type);
 
             var modifier = 0;
             foreach (var enchantment in enchantments)
-                modifier += (int)enchantment.StatModValue;
+            {
+                var statModVal = (int)enchantment.StatModValue;
 
+                if (positive == null || positive.Value && statModVal > 0 || !positive.Value && statModVal < 0)
+                {
+                    modifier += statModVal;
+                }
+            }
             return modifier;
         }
 
@@ -696,6 +750,15 @@ namespace ACE.Server.Managers
         }
 
         /// <summary>
+        /// Returns either the positive body armor from life spells (ie. Armor Self)
+        /// or the negative body armor (ie. Imperil)
+        /// </summary>
+        public virtual int GetBodyArmorMod(bool positive)
+        {
+            return GetModifier(EnchantmentTypeFlags.BodyArmorValue, positive);
+        }
+
+        /// <summary>
         /// Gets the resistance modifier for a damage type
         /// </summary>
         public virtual float GetResistanceMod(DamageType damageType)
@@ -708,6 +771,41 @@ namespace ACE.Server.Managers
             var modifier = 1.0f;
             foreach (var enchantment in enchantments)
                 modifier *= enchantment.StatModValue;
+
+            if (WorldObject is Player player)
+            {
+                switch (resistance)
+                {
+                    case PropertyFloat.ResistSlash:
+                        if (player.AugmentationResistanceSlash > 0)
+                            modifier -= player.AugmentationResistanceSlash * 0.1f;
+                        break;
+                    case PropertyFloat.ResistPierce:
+                        if (player.AugmentationResistancePierce > 0)
+                            modifier -= player.AugmentationResistancePierce * 0.1f;
+                        break;
+                    case PropertyFloat.ResistBludgeon:
+                        if (player.AugmentationResistanceBlunt > 0)
+                            modifier -= player.AugmentationResistanceBlunt * 0.1f;
+                        break;
+                    case PropertyFloat.ResistFire:
+                        if (player.AugmentationResistanceFire > 0)
+                            modifier -= player.AugmentationResistanceFire * 0.1f;
+                        break;
+                    case PropertyFloat.ResistCold:
+                        if (player.AugmentationResistanceFrost > 0)
+                            modifier -= player.AugmentationResistanceFrost * 0.1f;
+                        break;
+                    case PropertyFloat.ResistAcid:
+                        if (player.AugmentationResistanceAcid > 0)
+                            modifier -= player.AugmentationResistanceAcid * 0.1f;
+                        break;
+                    case PropertyFloat.ResistElectric:
+                        if (player.AugmentationResistanceLightning > 0)
+                            modifier -= player.AugmentationResistanceLightning * 0.1f;
+                        break;
+                }
+            }
 
             return modifier;
         }
@@ -776,14 +874,18 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual int GetDamageMod()
         {
-            if (!WorldObject.IsEnchantable)
-                return 0;
+            var damageMod = GetAdditiveMod(PropertyInt.Damage);
+            var auraDamageMod = GetAdditiveMod(PropertyInt.WeaponAuraDamage);
 
-            // BD8 seems to be the only one with aura in db?
-            var aura = GetAdditiveMod(PropertyInt.WeaponAuraDamage);
-            if (aura != 0) return aura;
+            // there is an unfortunate situation in the spell db,
+            // where blood drinker 1-7 are defined as PropertyInt.Damage
+            // (possibly from also being cast as direct item spells elsewhere?)
+            // and blood drinker 8 is properly defined as aura...
 
-            return GetAdditiveMod(PropertyInt.Damage);
+            if (WorldObject is Creature && auraDamageMod != 0)
+                return auraDamageMod;
+            else
+                return damageMod;
         }
 
         /// <summary>
@@ -791,9 +893,6 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual float GetDamageModifier()
         {
-            if (!WorldObject.IsEnchantable)
-                return 1.0f;
-
             return GetMultiplicativeMod(PropertyFloat.DamageMod);
         }
 
@@ -802,13 +901,13 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual float GetAttackMod()
         {
-            if (!WorldObject.IsEnchantable)
-                return 0.0f;
+            var offenseMod = GetAdditiveMod(PropertyFloat.WeaponOffense);
+            var auraOffenseMod = GetAdditiveMod(PropertyFloat.WeaponAuraOffense);
 
-            var aura = GetAdditiveMod(PropertyFloat.WeaponAuraOffense);
-            if (aura != 0) return aura;
-
-            return GetAdditiveMod(PropertyFloat.WeaponOffense);
+            if (WorldObject is Creature && auraOffenseMod != 0)
+                return auraOffenseMod;
+            else
+                return offenseMod;
         }
 
         /// <summary>
@@ -816,13 +915,13 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual int GetWeaponSpeedMod()
         {
-            if (!WorldObject.IsEnchantable)
-                return 0;
+            var speedMod = GetAdditiveMod(PropertyInt.WeaponTime);
+            var auraSpeedMod = GetAdditiveMod(PropertyInt.WeaponAuraSpeed);
 
-            var aura = GetAdditiveMod(PropertyInt.WeaponAuraSpeed);
-            if (aura != 0) return aura;
-
-            return GetAdditiveMod(PropertyInt.WeaponTime);
+            if (WorldObject is Creature && auraSpeedMod != 0)
+                return auraSpeedMod;
+            else
+                return speedMod;
         }
 
         /// <summary>
@@ -830,13 +929,13 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual float GetDefenseMod()
         {
-            if (!WorldObject.IsEnchantable)
-                return 0;
+            var defenseMod = GetAdditiveMod(PropertyFloat.WeaponDefense);
+            var auraDefenseMod = GetAdditiveMod(PropertyFloat.WeaponAuraDefense);
 
-            var aura = GetAdditiveMod(PropertyFloat.WeaponAuraDefense);
-            if (aura != 0) return aura;
-
-            return GetAdditiveMod(PropertyFloat.WeaponDefense);
+            if (WorldObject is Creature && auraDefenseMod != 0)
+                return auraDefenseMod;
+            else
+                return defenseMod;
         }
 
         /// <summary>
@@ -844,14 +943,13 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual float GetManaConvMod()
         {
-            if (!WorldObject.IsEnchantable)
-                return 1.0f;
+            var manaConvMod = GetMultiplicativeMod(PropertyFloat.ManaConversionMod);
+            var manaConvAuraMod = GetMultiplicativeMod(PropertyFloat.WeaponAuraManaConv);
 
-            // multiplicative
-            var aura = GetMultiplicativeMod(PropertyFloat.WeaponAuraManaConv);
-            if (aura != 1.0f) return aura;
-
-            return GetMultiplicativeMod(PropertyFloat.ManaConversionMod);
+            if (WorldObject is Creature && manaConvAuraMod != 1.0f)
+                return manaConvAuraMod;
+            else
+                return manaConvMod;
         }
 
         /// <summary>
@@ -859,14 +957,13 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual float GetElementalDamageMod()
         {
-            if (!WorldObject.IsEnchantable)
-                return 0;
+            var elementalDamageMod = GetAdditiveMod(PropertyFloat.ElementalDamageMod);
+            var elementalDamageAuraMod = GetAdditiveMod(PropertyFloat.WeaponAuraElemental);
 
-            // additive
-            var aura = GetAdditiveMod(PropertyFloat.WeaponAuraElemental);
-            if (aura != 0) return aura;
-
-            return GetAdditiveMod(PropertyFloat.ElementalDamageMod);
+            if (WorldObject is Creature && elementalDamageAuraMod != 0)
+                return elementalDamageAuraMod;
+            else
+                return elementalDamageMod;
         }
 
         /// <summary>
@@ -874,9 +971,6 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual float GetVarianceMod()
         {
-            if (!WorldObject.IsEnchantable)
-                return 1.0f;
-
             return GetMultiplicativeMod(PropertyFloat.DamageVariance);
         }
 
@@ -885,9 +979,6 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual int GetArmorMod()
         {
-            if (!WorldObject.IsEnchantable)
-                return 0;
-
             return GetAdditiveMod(PropertyInt.ArmorLevel);
         }
 
@@ -896,9 +987,6 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual float GetArmorModVsType(DamageType damageType)
         {
-            if (!WorldObject.IsEnchantable)
-                return 0.0f;
-
             var typeFlags = EnchantmentTypeFlags.Float | EnchantmentTypeFlags.SingleStat | EnchantmentTypeFlags.Additive;
             var key = GetImpenBaneKey(damageType);
             var enchantments = GetEnchantments_TopLayer(typeFlags, (uint)key);
@@ -953,7 +1041,13 @@ namespace ACE.Server.Managers
         /// </summary>
         public virtual int GetDamageRating()
         {
-            var damageRating = GetRating(PropertyInt.DamageRating);
+            // get from base properties (monsters)?
+            var damageRating = WorldObject.DamageRating ?? 0;
+
+            damageRating += GetRating(PropertyInt.DamageRating);
+
+            if (WorldObject is Player player && player.AugmentationDamageBonus > 0)
+                damageRating += player.AugmentationDamageBonus * 3;
 
             // weakness as negative damage rating?
             var weaknessRating = GetRating(PropertyInt.WeaknessRating);
@@ -963,7 +1057,12 @@ namespace ACE.Server.Managers
 
         public virtual int GetDamageResistRating()
         {
-            var damageResistanceRating = GetRating(PropertyInt.DamageResistRating);
+            var damageResistanceRating = WorldObject.DamageResistRating ?? 0;
+
+            damageResistanceRating += GetRating(PropertyInt.DamageResistRating);
+
+            if (WorldObject is Player player && player.AugmentationDamageReduction > 0)
+                damageResistanceRating += player.AugmentationDamageReduction * 3;
 
             // nether DoTs as negative DRR?
             var netherDotDamageRating = GetNetherDotDamageRating();
@@ -1015,6 +1114,41 @@ namespace ACE.Server.Managers
             return GetAdditiveMod(enchantments);
         }
 
+        public static ushort SpellCategory_Cooldown = 0x8000;
+
+        /// <summary>
+        /// Adds 0x8000 to the sharedCooldownID
+        /// </summary>
+        public uint GetCooldownSpellID(int sharedCooldownID)
+        {
+            return (uint)(SpellCategory_Cooldown | sharedCooldownID);
+        }
+
+        /// <summary>
+        /// Returns the seconds until this item's cooldown expires
+        /// </summary>
+        public float GetCooldown(int sharedCooldownID)
+        {
+            var cooldownSpellID = GetCooldownSpellID(sharedCooldownID);
+
+            var cooldown = GetEnchantment(cooldownSpellID);
+
+            if (cooldown != null)
+                return (float)(cooldown.Duration - Math.Abs(cooldown.StartTime));
+            else
+                return 0.0f;
+        }
+
+        /// <summary>
+        /// Returns TRUE if this item can be activated at this time
+        /// </summary>
+        public bool CheckCooldown(int? sharedCooldownID)
+        {
+            if (sharedCooldownID == null)
+                return true;
+
+            return GetCooldown(sharedCooldownID.Value) == 0.0f;
+        }
 
         /// <summary>
         /// Called every ~5 seconds for active object
@@ -1099,7 +1233,15 @@ namespace ACE.Server.Managers
                 }
 
                 // get damage / damage resistance rating here for now?
-                var damageRatingMod = Creature.GetRatingMod(damager.EnchantmentManager.GetDamageRating());
+                var heritageMod = 1.0f;
+                if (damager is Player player)
+                {
+                    if (damageType == DamageType.Nether)
+                        heritageMod = player.GetHeritageBonus(WeaponType.Magic) ? 1.05f : 1.0f;
+                    else
+                        heritageMod = player.GetHeritageBonus(player.GetEquippedWeapon()) ? 1.05f : 1.0f;
+                }
+                var damageRatingMod = Creature.AdditiveCombine(heritageMod, Creature.GetPositiveRatingMod(damager.EnchantmentManager.GetDamageRating()));
                 var damageResistRatingMod = Creature.GetNegativeRatingMod(GetDamageResistRating());
                 //Console.WriteLine("DR: " + Creature.ModToRating(damageRatingMod));
                 //Console.WriteLine("DRR: " + Creature.NegativeModToRating(damageResistRatingMod));

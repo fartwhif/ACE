@@ -3,12 +3,15 @@ namespace ACE.Server.WorldObjects
 {
     partial class Container
     {
-        public override void HeartBeat(double currentUnixTime)
+        public override void Heartbeat(double currentUnixTime)
         {
             foreach (var wo in Inventory.Values)
-                wo.HeartBeat(currentUnixTime);
+            {
+                if (wo.NextHeartbeatTime <= currentUnixTime)
+                    wo.Heartbeat(currentUnixTime);
+            }
 
-            base.HeartBeat(currentUnixTime);
+            base.Heartbeat(currentUnixTime);
         }
     }
 }

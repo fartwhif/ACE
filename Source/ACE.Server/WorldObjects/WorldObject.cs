@@ -59,8 +59,6 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public Landblock CurrentLandblock { get; internal set; }
 
-        public int ManaGiven { get; set; }
-
         public DateTime? ItemManaDepletionMessageTimestamp { get; set; } = null;
         public DateTime? ItemManaConsumptionTimestamp { get; set; } = null;
 
@@ -92,7 +90,7 @@ namespace ACE.Server.WorldObjects
 
             InitializePropertyDictionaries();
             SetEphemeralValues();
-            InitializeHeartBeat();
+            InitializeHeartbeats();
 
             CreationTimestamp = (int)Time.GetUnixTime();
         }
@@ -110,7 +108,7 @@ namespace ACE.Server.WorldObjects
 
             InitializePropertyDictionaries();
             SetEphemeralValues();
-            InitializeHeartBeat();
+            InitializeHeartbeats();
         }
 
         /// <summary>
@@ -249,12 +247,7 @@ namespace ACE.Server.WorldObjects
 
             AddGeneratorProfiles();
 
-            if (IsGenerator && RegenerationInterval > 0)
-                HeartbeatInterval = RegenerationInterval;
-
             BaseDescriptionFlags = ObjectDescriptionFlag.Attackable;
-
-            EncumbranceVal = EncumbranceVal ?? (StackUnitEncumbrance ?? 0) * (StackSize ?? 1);
 
             EmoteManager = new EmoteManager(this);
             EnchantmentManager = new EnchantmentManagerWithCaching(this);
@@ -500,7 +493,7 @@ namespace ACE.Server.WorldObjects
                         sb.AppendLine($"{prop.Name} = {obj.CurrentWieldedLocation}" + " (" + (uint)obj.CurrentWieldedLocation + ")");
                         break;
                     case "priority":
-                        sb.AppendLine($"{prop.Name} = {obj.Priority}" + " (" + (uint)obj.Priority + ")");
+                        sb.AppendLine($"{prop.Name} = {obj.ClothingPriority}" + " (" + (uint)obj.ClothingPriority + ")");
                         break;
                     case "radarcolor":
                         sb.AppendLine($"{prop.Name} = {obj.RadarColor}" + " (" + (uint)obj.RadarColor + ")");
@@ -554,7 +547,7 @@ namespace ACE.Server.WorldObjects
             foreach (var item in obj.GetAllPropertyDataId())
                 sb.AppendLine($"PropertyDataId.{Enum.GetName(typeof(PropertyDataId), item.Key)} ({(int)item.Key}) = {item.Value}");
             foreach (var item in obj.GetAllPropertyFloat())
-                sb.AppendLine($"PropertyDouble.{Enum.GetName(typeof(PropertyFloat), item.Key)} ({(int)item.Key}) = {item.Value}");
+                sb.AppendLine($"PropertyFloat.{Enum.GetName(typeof(PropertyFloat), item.Key)} ({(int)item.Key}) = {item.Value}");
             foreach (var item in obj.GetAllPropertyInstanceId())
                 sb.AppendLine($"PropertyInstanceId.{Enum.GetName(typeof(PropertyInstanceId), item.Key)} ({(int)item.Key}) = {item.Value}");
             foreach (var item in obj.GetAllPropertyInt())
@@ -717,11 +710,6 @@ namespace ACE.Server.WorldObjects
             return adjusted;
         }
 
-        public virtual void Activate(WorldObject activator)
-        {
-            // empty base, override in child objects
-        }
-
         public virtual void Open(WorldObject opener)
         {
             // empty base, override in child objects
@@ -777,31 +765,31 @@ namespace ACE.Server.WorldObjects
             var baseDamage = GetBaseDamage();
             var weapon = wielder.GetEquippedWeapon();
 
-            var damageMod = 0;
+            var damageMod = 0.0f;
             var varianceMod = 1.0f;
 
-            // get weapon item enchantments and wielder auras
-            if (weapon == null)
+            if (weapon != null)
             {
-                damageMod = wielder.EnchantmentManager.GetDamageMod();
-                varianceMod = wielder.EnchantmentManager.GetVarianceMod();
-            }
-            else if (weapon.IsEnchantable)
-            {
-                damageMod = weapon.EnchantmentManager.GetDamageMod() + wielder.EnchantmentManager.GetDamageMod();
-                varianceMod = weapon.EnchantmentManager.GetVarianceMod() * wielder.EnchantmentManager.GetVarianceMod();
+                damageMod += weapon.EnchantmentManager.GetDamageMod();
+                varianceMod *= weapon.EnchantmentManager.GetVarianceMod();
+
+                if (weapon.IsEnchantable)
+                {
+                    // factor in wielder auras for enchantable weapons
+                    damageMod += wielder.EnchantmentManager.GetDamageMod();
+                    varianceMod *= wielder.EnchantmentManager.GetVarianceMod();
+                }
             }
 
             var baseVariance = 1.0f - (baseDamage.Min / baseDamage.Max);
 
-            var damageBonus = weapon != null ? (float)(weapon.GetProperty(PropertyFloat.DamageMod) ?? 1.0f) : 1.0f;
-            if (weapon == null)
+            var damageBonus = 1.0f;
+            if (weapon != null)
             {
-                damageBonus *= wielder.EnchantmentManager.GetDamageModifier();
-            }
-            else if (weapon.IsEnchantable)
-            {
-                damageBonus *= wielder.EnchantmentManager.GetDamageModifier() * weapon.EnchantmentManager.GetDamageModifier();
+                damageBonus = (float)(weapon.GetProperty(PropertyFloat.DamageMod) ?? 1.0f) * weapon.EnchantmentManager.GetDamageModifier();
+
+                if (weapon.IsEnchantable)
+                    damageBonus *= wielder.EnchantmentManager.GetDamageModifier();
             }
 
             // additives first, then multipliers?
@@ -831,7 +819,7 @@ namespace ACE.Server.WorldObjects
                 return DamageType.Bludgeon;
 
             DamageType damageTypes;
-            var attackType = creature.GetAttackType();
+            var attackType = creature.GetCombatType();
             if (attackType == CombatType.Melee || ammo == null || !weapon.IsAmmoLauncher)
                 damageTypes = (DamageType)(weapon.GetProperty(PropertyInt.DamageType) ?? 0);
             else
@@ -856,11 +844,22 @@ namespace ACE.Server.WorldObjects
             return damageTypes;
         }
 
+        private bool isDestroyed;
+
         /// <summary>
-        /// If this is a container or a creature, all of the inventory and/or equipped objects will also be destroyed.
+        /// If this is a container or a creature, all of the inventory and/or equipped objects will also be destroyed.<para />
+        /// An object should only be destroyed once.
         /// </summary>
-        public virtual void Destroy()
+        public virtual void Destroy(bool raiseNotifyOfDestructionEvent = true)
         {
+            if (isDestroyed)
+            {
+                log.WarnFormat("Item 0x{0:X8}:{1} called destroy more than once.", Guid.Full, Name);
+                return;
+            }
+
+            isDestroyed = true;
+
             if (this is Container container)
             {
                 foreach (var item in container.Inventory.Values)
@@ -873,9 +872,14 @@ namespace ACE.Server.WorldObjects
                     item.Destroy();
             }
 
-            NotifyOfEvent(RegenerationType.Destruction);
+            if (raiseNotifyOfDestructionEvent)
+                NotifyOfEvent(RegenerationType.Destruction);
+
             CurrentLandblock?.RemoveWorldObject(Guid);
             RemoveBiotaFromDatabase();
+
+            if (Guid.IsDynamic())
+                GuidManager.RecycleDynamicGuid(Guid);
         }
 
         public string GetPluralName()
@@ -947,5 +951,20 @@ namespace ACE.Server.WorldObjects
         public bool IsLinkSpot => WeenieType == WeenieType.Generic && WeenieClassName.Equals("portaldestination");
 
         public static readonly float LocalBroadcastRange = 96.0f;
+
+        public SetPosition ScatterPos;
+
+        public Skill ConvertToMoASkill(Skill skill)
+        {
+            if (this is Player player)
+            {
+                if (SkillExtensions.RetiredMelee.Contains(skill))
+                    return player.GetHighestMeleeSkill();
+                if (SkillExtensions.RetiredMissile.Contains(skill))
+                    return Skill.MissileWeapons;
+            }
+
+            return skill;
+        }
     }
 }
