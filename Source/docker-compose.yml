@@ -1,0 +1,8 @@
+version: '3.4'
+
+services:
+  ace.server:
+    image: ${DOCKER_REGISTRY-}aceserver
+    build:
+      context: .
+      dockerfile: ACE.Server\Dockerfile

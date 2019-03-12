@@ -1,0 +1,47 @@
+For now, you will need to include the data files in the project in order to build.  Should be able to get something better going in that regard.
+
+after building the image with VS, push it to docker.io repository under your account:
+
+docker login
+docker tag aceserver:latest fartwhif/aceserver
+docker push fartwhif/aceserver
+
+(OPTIONAL) USE WITH EXTREME CAUTION: To remove all existing containers using windows powershell 
+docker ps -aq | Foreach-Object { docker stop $_; docker rm $_; }
+
+(OPTIONAL) USE WITH EXTREME CAUTION: To remove all existing images using windows powershell to free up disk space at the host machine
+docker images -q | Foreach-Object { docker image rm $_;}
+
+then at the host machine, that will be hosting the docker container:
+docker pull fartwhif/aceserver
+
+Create the container and publish the ports:
+docker container create -p 9000:9000/udp -p 9001:9001/udp fartwhif/aceserver:latest
+
+Find your new container:
+docker ps -a
+CONTAINER ID        IMAGE                       COMMAND                  CREATED             STATUS                              PORTS               NAMES
+325fdf820695        fartwhif/aceserver:latest   "dotnet ACE.Server.d…"   4 minutes ago       Exited (3762504530) 2 minutes ago                       sleepy_allen
+
+edit container config:
+if you have your own Config.json to overwrite the one in the container with, you can skip the next command, make sure OutputOnlyConsole is true to workaround a console bug:
+docker cp 325fdf820695:C:\ACE\Config.json .
+notepad Config.json
+edit the configuration file, then:
+docker cp Config.json 325fdf820695:C:\ACE\Config.json
+
+run the container
+docker start 325fdf820695
+
+watch the statistics of the container:
+docker container stats
+CTRL+C to stop
+
+attach to it to see what's happening
+docker attach 325fdf820695
+CTRL+C to detach
+
+if your container remains running, you can run a command line alongside it while it's running:
+docker exec -it 325fdf820695 "C:\Windows\System32\cmd.exe"
+
+

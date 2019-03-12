@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
-
+using ACE.Common;
 using ACE.Entity.Enum;
 using ACE.Server.Network;
 
@@ -56,13 +56,26 @@ namespace ACE.Server.Command
         private static void CommandThread()
         {
             Console.WriteLine("");
-            Console.WriteLine("ACEmulator command prompt ready.");
-            Console.WriteLine("");
-            Console.WriteLine("Type \"acecommands\" for help.");
+            
+            if (ConfigManager.Config.Server.OutputOnlyConsole)
+            {
+                Console.WriteLine("ACEmulator ready.");
+            }
+            else
+            {
+                Console.WriteLine("ACEmulator command prompt ready.");
+                Console.WriteLine("");
+                Console.WriteLine("Type \"acecommands\" for help.");
+            }
             Console.WriteLine("");
 
             for (;;)
             {
+                if (ConfigManager.Config.Server.OutputOnlyConsole)
+                {
+                    Thread.Sleep(500);
+                    continue;
+                }
                 Console.Write("ACE >> ");
 
                 string commandLine = Console.ReadLine();

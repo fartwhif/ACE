@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <None Remove="Config.json" />
+    <None Remove="Config.json.docker_example" />
     <None Remove="starterGear.json" />
   </ItemGroup>
 
@@ -29,6 +30,18 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="client_cell_1.dat">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="client_highres.dat">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="client_local_English.dat">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="client_portal.dat">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="log4net.config">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

@@ -13,7 +13,7 @@
         "DefaultAccessLevel": 0,
         "AllowAutoAccountCreation": true
     },
-    "OutputOnlyConsole": false,
+    "OutputOnlyConsole": true,
     "DatFilesDirectory": "c:\\ACE\\",
     "ShutdownInterval": "60",
     "WorldDatabasePrecaching": false,
