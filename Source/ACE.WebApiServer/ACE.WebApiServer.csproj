@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netcoreapp2.1</TargetFramework>
+    <ApplicationIcon />
+    <OutputType>Exe</OutputType>
+    <StartupObject />
+    <Platforms>x64</Platforms>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="AutoMapper" Version="8.0.0" />
+        <PackageReference Include="FluentValidation" Version="8.1.2" />
+        <PackageReference Include="log4net" Version="2.0.8" />
+        <PackageReference Include="Nancy" Version="2.0.0-clinteastwood" />
+        <PackageReference Include="Nancy.Authentication.Stateless" Version="2.0.0-clinteastwood" />
+        <PackageReference Include="Nancy.Validation.FluentValidation" Version="2.0.0-clinteastwood" />
+        <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
+        <PackageReference Include="Microsoft.AspNetCore.App" Version="2.1.1" />
+    </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ACE.Server\ACE.Server.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="start_server+webapi.bat">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <Target Name="PreBuild" BeforeTargets="PreBuildEvent">
+    <Exec Command="copy &quot;$(SolutionDir)\Ace.Server\Config.js&quot; &quot;$(TargetDir)Config.js&quot;&#xD;&#xA;copy &quot;$(SolutionDir)\Ace.Server\log4net.config&quot; &quot;$(TargetDir)log4net.config&quot;" />
+  </Target>
+
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <Exec Command="set src=$(TargetDir)&#xD;&#xA;set dst=$(SolutionDir)ACE.Server\bin\x64\Debug\netcoreapp2.1\Plugins\ACE.WebApiServer&#xD;&#xA;set dst2=$(SolutionDir)ACE.Server\bin\x64\Release\netcoreapp2.1\Plugins\ACE.WebApiServer&#xD;&#xA;robocopy &quot;%src% &quot; &quot;%dst% &quot; &quot;*.*&quot; /XO /NJH /NP&#xD;&#xA;&#xD;&#xA;rem these are not needed as they will already be loaded in the app domain:&#xD;&#xA;del /f /q &quot;%dst%\ACE.Server.*&quot;&#xD;&#xA;del /f /q &quot;%dst%\ACE.Database.*&quot;&#xD;&#xA;del /f /q &quot;%dst%\ACE.DatLoader.*&quot;&#xD;&#xA;del /f /q &quot;%dst%\ACE.Entity.*&quot;&#xD;&#xA;del /f /q &quot;%dst%\ACE.Common.*&quot;&#xD;&#xA;&#xD;&#xA;robocopy &quot;%src% &quot; &quot;%dst2% &quot; &quot;*.*&quot; /XO /NJH /NP&#xD;&#xA;&#xD;&#xA;rem these are not needed as they will already be loaded in the app domain:&#xD;&#xA;del /f /q &quot;%dst2%\ACE.Server.*&quot;&#xD;&#xA;del /f /q &quot;%dst2%\ACE.Database.*&quot;&#xD;&#xA;del /f /q &quot;%dst2%\ACE.DatLoader.*&quot;&#xD;&#xA;del /f /q &quot;%dst2%\ACE.Entity.*&quot;&#xD;&#xA;del /f /q &quot;%dst2%\ACE.Common.*&quot;&#xD;&#xA;SET ERRORLEVEL = 0" />
+  </Target>
+
+</Project>
