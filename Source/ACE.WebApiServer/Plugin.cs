@@ -9,7 +9,7 @@ using System.Reflection;
 
 namespace ACE.WebApiServer
 {
-    public class Plugin: IACEPlugin
+    public class Plugin : IACEPlugin
     {
         private static readonly ILog log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
 
@@ -17,17 +17,13 @@ namespace ACE.WebApiServer
         {
         }
 
-        public static void Main(string[] args)
-        {
-            var p = new Plugin();
-            p.Start();
-        }
-
         public void Start()
         {
-            var caller = Assembly.GetCallingAssembly().GetName().Name;
-            if (caller != "ACE.Server")
-                Server.Program.Start();
+            string caller = Assembly.GetCallingAssembly().GetName().FullName;
+            if (!caller.StartsWith("ACE.Server, Version=1.0.0.0, Culture=neutral, PublicKeyToken="))
+            {
+                log.Fatal("Invalid startup method.  This is an ACEmulator plugin.");
+            }
 
             if (!ConfigManager.Config.WebApi.Enabled)
             {
@@ -40,11 +36,11 @@ namespace ACE.WebApiServer
             // Init our text encoding options. This will allow us to use more than standard ANSI text, which the client also supports.
             System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 
-            var logRepository = LogManager.GetRepository(Assembly.GetEntryAssembly());
+            log4net.Repository.ILoggerRepository logRepository = LogManager.GetRepository(Assembly.GetEntryAssembly());
             XmlConfigurator.Configure(logRepository, new FileInfo("log4net.config"));
 
-           
-            var txtCalledFrom = (caller == "ACE.WebApiServer") ? "" : $" Caller is {caller}";
+
+            string txtCalledFrom = (caller == "ACE.WebApiServer") ? "" : $" Caller is {caller}";
 
             Console.WriteLine();
             log.Info($"Starting ACE.WebApiServer.{txtCalledFrom}");

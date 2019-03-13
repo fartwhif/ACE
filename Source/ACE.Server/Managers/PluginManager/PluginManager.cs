@@ -7,14 +7,13 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Loader;
-using System.Threading;
 
 namespace ACE.Server.Managers.PluginManager
 {
     public static class PluginManager
     {
         private static readonly ILog log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
-        public static List<ACEPluginReferences> Plugins = new List<ACEPluginReferences>();
+        public static readonly List<ACEPluginReferences> Plugins = new List<ACEPluginReferences>();
         private static string curPlugPath = "";
         private static string curPlugNam = "";
         private static readonly List<Tuple<string, Assembly>> PluginDlls = new List<Tuple<string, Assembly>>();
@@ -23,9 +22,24 @@ namespace ACE.Server.Managers.PluginManager
         private static string DpACEBase { get; } = new FileInfo(new Uri(Assembly.GetExecutingAssembly().CodeBase).LocalPath).Directory.FullName;
         private static string DpPlugins { get; } = Path.Combine(DpACEBase, "Plugins");
 
-        private static void FindDomainDlls()
+        /// <summary>
+        /// make lists of all the DLLs in the main ACE dir and the plugin dirs
+        /// </summary>
+        private static void GatherDlls()
         {
+            ACEDlls.AddRange(new DirectoryInfo(DpACEBase).GetFiles("*.dll", SearchOption.TopDirectoryOnly).Select(k => new Tuple<string, Assembly>(k.FullName, null)));
 
+            DirectoryInfo[] plugDirs = new DirectoryInfo(DpPlugins).GetDirectories();
+
+            foreach (DirectoryInfo pd in plugDirs)
+            {
+                if (ConfigManager.Config.Plugins.Plugins.Any(k => k.ToLower() == pd.Name.ToLower()))
+                {
+                    PluginDlls.AddRange(pd.GetFiles("*.dll",
+                        new EnumerationOptions() { ReturnSpecialDirectories = false, RecurseSubdirectories = false, IgnoreInaccessible = true })
+                        .Select(k => new Tuple<string, Assembly>(k.FullName, null)));
+                }
+            }
         }
 
         public static void Initialize()
@@ -34,77 +48,77 @@ namespace ACE.Server.Managers.PluginManager
             {
                 if (ConfigManager.Config.Plugins.Enabled && DpPlugins != null)
                 {
-                    // make lists of all the DLLs in the main ACE dir and the plugin dirs
-                    ACEDlls.AddRange(new DirectoryInfo(DpACEBase).GetFiles("*.dll", SearchOption.TopDirectoryOnly).Select(k => new Tuple<string, Assembly>(k.FullName, null)));
-                    PluginDlls.AddRange(new DirectoryInfo(Path.Combine(DpACEBase, "Plugins")).GetFiles("*.dll", SearchOption.AllDirectories).Select(k => new Tuple<string, Assembly>(k.FullName, null)));
+                    GatherDlls();
 
-
+                    // wire up the dependency resolution function
                     AssemblyLoadContext.Default.Resolving += Default_Resolving;
 
-                    foreach (string addon in ConfigManager.Config.Plugins.Plugins)
+                    // attempt to load each plugin
+                    foreach (string pl in ConfigManager.Config.Plugins.Plugins)
                     {
-                        string addonName = Path.GetFileName(addon);
-                        string fpPluginDll = addonName + ".dll";
-                        string dpPlugin = Path.Combine(DpPlugins, addonName);
-                        string fp = Path.Combine(dpPlugin, fpPluginDll);
+                        curPlugNam = Path.GetFileName(pl);
+                        string fpPluginDll = curPlugNam + ".dll";
+                        string dpPl = Path.Combine(DpPlugins, curPlugNam);
+                        string fp = Path.Combine(dpPl, fpPluginDll);
+                        curPlugPath = dpPl;
 
-                        if (File.Exists(fp))
+                        if (!Directory.Exists(dpPl))
                         {
-                            curPlugPath = dpPlugin;
-                            curPlugNam = addonName;
-                            log.Info($"Loading ACE Plugin: {curPlugNam}");
-                            log.Info($"Plugin path: {DpPlugins}");
-                            ACEPluginReferences add = new ACEPluginReferences();
-                            try
+                            log.Warn($"Plugin {curPlugNam} failed, missing plugin directory");
+                            continue;
+                        }
+
+                        if (!File.Exists(fp))
+                        {
+                            log.Warn($"Plugin {curPlugNam} failed, missing plugin file {fp}");
+                            continue;
+                        }
+
+                        log.Info($"Plugin {curPlugNam} Loading, path: {fp}");
+                        ACEPluginReferences add = new ACEPluginReferences();
+                        try
+                        {
+                            Assembly assem = Assembly.LoadFile(fp);
+                            add.PluginAssembly = assem;
+
+                            IEnumerable<Type> types =
+                                from typ in assem.GetTypes()
+                                where typeof(IACEPlugin).IsAssignableFrom(typ)
+                                select typ;
+
+                            foreach (Type type in types)
                             {
-                                Assembly assem = Assembly.LoadFile(fp);
-                                add.PluginAssembly = assem;
-
-                                IEnumerable<Type> types =
-                                    from typ in assem.GetTypes()
-                                    where typeof(IACEPlugin).IsAssignableFrom(typ)
-                                    select typ;
-
-                                foreach (Type type in types)
+                                ACEPluginType atyp = new ACEPluginType() { Type = type };
+                                add.Types.Add(atyp);
+                                IACEPlugin instance = (IACEPlugin)Activator.CreateInstance(type);
+                                log.Info($"Plugin {type} instance Created");
+                                atyp.Instance = instance;
+                                try
                                 {
-                                    ACEPluginType atyp = new ACEPluginType() { Type = type };
-                                    add.Types.Add(atyp);
-                                    IACEPlugin instance = (IACEPlugin)Activator.CreateInstance(type);
-                                    log.Info($"Created instance of {type}");
-                                    atyp.Instance = instance;
-                                    try
-                                    {
-                                        log.Info($"Plugin {curPlugNam}:{type} Starting.");
-                                        instance.Start(); // non blocking!
-                                        //log.Info($"Plugin {curPlugNam}:{type} Started.");
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        log.Error($"Plugin {curPlugNam}:{type} startup failed.", ex);
-                                        atyp.StartupException = ex;
-                                    }
-                                    finally { atyp.StartupComplete = true; }
+                                    instance.Start(); // non blocking!
                                 }
-                                Plugins.Add(add);
+                                catch (Exception ex)
+                                {
+                                    log.Error($"Plugin {curPlugNam} startup failed", ex);
+                                    atyp.StartupException = ex;
+                                }
+                                finally { atyp.StartupComplete = true; }
                             }
-                            catch (Exception ex)
-                            {
-                                log.Warn($"Unable to load Plugin: {addon}", ex);
-                            }
+                            Plugins.Add(add);
+                        }
+                        catch (Exception ex)
+                        {
+                            log.Warn($"Plugin {curPlugNam} failed", ex);
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                log.Fatal("Plugin manager failed to initialize.", ex);
+                log.Fatal("Plugin manager failed to initialize", ex);
             }
             curPlugNam = null;
             curPlugPath = null;
-            while (Plugins.Any(k => k.Types.Any(r => !r.StartupComplete)))
-            {
-                Thread.Sleep(1000);
-            }
         }
 
         // https://stackoverflow.com/questions/40908568/assembly-loading-in-net-core
@@ -132,7 +146,8 @@ namespace ACE.Server.Managers.PluginManager
                 log.Info($"{curPlugNam} Loaded {fil.Item1}");
                 return assem;
             }
-            return context.LoadFromAssemblyName(name);
+            log.Fatal($"Plugin {curPlugNam} dependency missing: {name}");
+            return null;
         }
         private static Tuple<string, Assembly> GetFavoredDependencyDll(string DLLFileName, ref List<Tuple<string, Assembly>> fileList)
         {

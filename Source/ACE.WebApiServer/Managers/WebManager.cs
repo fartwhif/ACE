@@ -20,7 +20,7 @@ namespace ACE.WebApiServer.Managers
             Gate gate = Gate.Instance; // unnecessarily spin up gate threads in preparation for web requests
             string listeningHost = ConfigManager.Config.WebApi.Host;
             int listeningPort = ConfigManager.Config.WebApi.Port;
-            log.Info($"Binding web host to {listeningHost}:{listeningPort}");
+            log.Info($"Binding WebApi to {listeningHost}:{listeningPort}");
             try
             {
                 if (!IPAddress.TryParse(listeningHost, out IPAddress listenAt))
@@ -32,7 +32,7 @@ namespace ACE.WebApiServer.Managers
             }
             catch (Exception ex)
             {
-                log.FatalFormat("Web host has thrown: {0}", ex.Message, ex);
+                log.FatalFormat("WebHost has thrown: {0}", ex.Message, ex);
             }
         }
 
