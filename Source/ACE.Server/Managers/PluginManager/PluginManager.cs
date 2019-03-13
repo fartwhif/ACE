@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Threading.Tasks;
 
 namespace ACE.Server.Managers.PluginManager
 {
@@ -48,6 +49,7 @@ namespace ACE.Server.Managers.PluginManager
             {
                 if (ConfigManager.Config.Plugins.Enabled && DpPlugins != null)
                 {
+                    // get dependency list
                     GatherDlls();
 
                     // wire up the dependency resolution function
@@ -93,16 +95,19 @@ namespace ACE.Server.Managers.PluginManager
                                 IACEPlugin instance = (IACEPlugin)Activator.CreateInstance(type);
                                 log.Info($"Plugin {type} instance Created");
                                 atyp.Instance = instance;
+                                TaskCompletionSource<bool> tsc = new TaskCompletionSource<bool>();
+                                atyp.PluginInitComplete = tsc;
                                 try
                                 {
-                                    instance.Start(); // non blocking!
+                                    instance.Start(tsc); // non blocking!
                                 }
                                 catch (Exception ex)
                                 {
                                     log.Error($"Plugin {curPlugNam} startup failed", ex);
                                     atyp.StartupException = ex;
+                                    tsc.SetResult(false);
                                 }
-                                finally { atyp.StartupComplete = true; }
+                                finally { atyp.StartupCalled = true; }
                             }
                             Plugins.Add(add);
                         }
@@ -119,6 +124,14 @@ namespace ACE.Server.Managers.PluginManager
             }
             curPlugNam = null;
             curPlugPath = null;
+            Task<bool>[] startupTasks = Plugins.SelectMany(k => k.Types).Select(k => k.PluginInitComplete.Task).ToArray();
+            Task.WaitAll(startupTasks);
+            IEnumerable<ACEPluginReferences> goodPlugins = Plugins.Where(k => k.Types.All(j => j.PluginInitComplete.Task.Result));
+            if (goodPlugins.Count() < 1)
+            {
+                return;
+            }
+            log.Info($"{goodPlugins.Select(k => k.PluginAssembly.GetName().Name).DefaultIfEmpty().Aggregate((a, b) => a + "," + b)} started");
         }
 
         // https://stackoverflow.com/questions/40908568/assembly-loading-in-net-core
@@ -143,10 +156,10 @@ namespace ACE.Server.Managers.PluginManager
             {
                 Assembly assem = context.LoadFromAssemblyPath(fil.Item1);
                 filList[filList.IndexOf(fil)] = new Tuple<string, Assembly>(filList[filList.IndexOf(fil)].Item1, assem);
-                log.Info($"{curPlugNam} Loaded {fil.Item1}");
+                log.Info($"Loaded {fil.Item1}");
                 return assem;
             }
-            log.Fatal($"Plugin {curPlugNam} dependency missing: {name}");
+            log.Fatal($"dependency missing: {name}");
             return null;
         }
         private static Tuple<string, Assembly> GetFavoredDependencyDll(string DLLFileName, ref List<Tuple<string, Assembly>> fileList)

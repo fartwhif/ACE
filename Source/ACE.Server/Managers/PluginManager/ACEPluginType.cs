@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 
 namespace ACE.Server.Managers.PluginManager
 {
@@ -6,7 +7,8 @@ namespace ACE.Server.Managers.PluginManager
     {
         public Type Type { get; set; } = null;
         public IACEPlugin Instance { get; set; } = null;
-        public bool StartupComplete { get; set; } = false;
+        public bool StartupCalled { get; set; } = false;
+        public TaskCompletionSource<bool> PluginInitComplete { get; set; } = null;
         public Exception StartupException { get; set; } = null;
     }
 }

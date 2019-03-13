@@ -35,6 +35,7 @@ namespace ACE.WebApiServer
         protected override void ApplicationStartup(TinyIoCContainer container, IPipelines pipelines)
         {
             //Conventions.ViewLocationConventions.Add((viewName, model, viewLocationContext) => string.Concat("Web/Views/", viewName));
+            Global.PluginInitComplete.SetResult(true);
         }
 
         protected override void ConfigureRequestContainer(TinyIoCContainer container, NancyContext context)
