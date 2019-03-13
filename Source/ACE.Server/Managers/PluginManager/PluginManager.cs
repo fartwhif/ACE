@@ -1,10 +1,12 @@
 using ACE.Common;
 using log4net;
+using Microsoft.Extensions.DependencyModel;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Threading;
 
 namespace ACE.Server.Managers.PluginManager
@@ -13,12 +15,18 @@ namespace ACE.Server.Managers.PluginManager
     {
         private static readonly ILog log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
         public static List<ACEPluginReferences> Plugins = new List<ACEPluginReferences>();
-        private static string currentlyStartingPluginPath = "";
-        private static string currentlyStartingPlugin = "";
-        private static readonly List<string> PluginDlls = new List<string>();
-        private static readonly List<string> ACEDlls = new List<string>();
+        private static string curPlugPath = "";
+        private static string curPlugNam = "";
+        private static readonly List<Tuple<string, Assembly>> PluginDlls = new List<Tuple<string, Assembly>>();
+        private static readonly List<Tuple<string, Assembly>> ACEDlls = new List<Tuple<string, Assembly>>();
+        private static readonly List<Assembly> ReferencedAssemblies = new List<Assembly>();
         private static string DpACEBase { get; } = new FileInfo(new Uri(Assembly.GetExecutingAssembly().CodeBase).LocalPath).Directory.FullName;
         private static string DpPlugins { get; } = Path.Combine(DpACEBase, "Plugins");
+
+        private static void FindDomainDlls()
+        {
+
+        }
 
         public static void Initialize()
         {
@@ -26,8 +34,13 @@ namespace ACE.Server.Managers.PluginManager
             {
                 if (ConfigManager.Config.Plugins.Enabled && DpPlugins != null)
                 {
-                    FindDomainDlls();
-                    AppDomain.CurrentDomain.AssemblyResolve += CurrentDomain_AssemblyResolve;
+                    // make lists of all the DLLs in the main ACE dir and the plugin dirs
+                    ACEDlls.AddRange(new DirectoryInfo(DpACEBase).GetFiles("*.dll", SearchOption.TopDirectoryOnly).Select(k => new Tuple<string, Assembly>(k.FullName, null)));
+                    PluginDlls.AddRange(new DirectoryInfo(Path.Combine(DpACEBase, "Plugins")).GetFiles("*.dll", SearchOption.AllDirectories).Select(k => new Tuple<string, Assembly>(k.FullName, null)));
+
+
+                    AssemblyLoadContext.Default.Resolving += Default_Resolving;
+
                     foreach (string addon in ConfigManager.Config.Plugins.Plugins)
                     {
                         string addonName = Path.GetFileName(addon);
@@ -37,9 +50,9 @@ namespace ACE.Server.Managers.PluginManager
 
                         if (File.Exists(fp))
                         {
-                            currentlyStartingPluginPath = dpPlugin;
-                            currentlyStartingPlugin = addonName;
-                            log.Info($"Loading ACE Plugin: {currentlyStartingPlugin}");
+                            curPlugPath = dpPlugin;
+                            curPlugNam = addonName;
+                            log.Info($"Loading ACE Plugin: {curPlugNam}");
                             log.Info($"Plugin path: {DpPlugins}");
                             ACEPluginReferences add = new ACEPluginReferences();
                             try
@@ -61,13 +74,13 @@ namespace ACE.Server.Managers.PluginManager
                                     atyp.Instance = instance;
                                     try
                                     {
-                                        log.Info($"Plugin {currentlyStartingPlugin}:{type} Starting.");
-                                        instance.Start();
-                                        log.Info($"Plugin {currentlyStartingPlugin}:{type} Started.");
+                                        log.Info($"Plugin {curPlugNam}:{type} Starting.");
+                                        instance.Start(); // non blocking!
+                                        //log.Info($"Plugin {curPlugNam}:{type} Started.");
                                     }
                                     catch (Exception ex)
                                     {
-                                        log.Error($"Plugin {currentlyStartingPlugin}:{type} startup failed.", ex);
+                                        log.Error($"Plugin {curPlugNam}:{type} startup failed.", ex);
                                         atyp.StartupException = ex;
                                     }
                                     finally { atyp.StartupComplete = true; }
@@ -86,59 +99,63 @@ namespace ACE.Server.Managers.PluginManager
             {
                 log.Fatal("Plugin manager failed to initialize.", ex);
             }
-            currentlyStartingPlugin = null;
-            currentlyStartingPluginPath = null;
+            curPlugNam = null;
+            curPlugPath = null;
             while (Plugins.Any(k => k.Types.Any(r => !r.StartupComplete)))
             {
                 Thread.Sleep(1000);
             }
         }
-        private static void FindDomainDlls()
+
+        // https://stackoverflow.com/questions/40908568/assembly-loading-in-net-core
+        private static Assembly Default_Resolving(AssemblyLoadContext context, AssemblyName name)
         {
-            ACEDlls.AddRange(new DirectoryInfo(DpACEBase).GetFiles("*.dll", SearchOption.TopDirectoryOnly).Select(k => k.FullName));
-            PluginDlls.AddRange(new DirectoryInfo(Path.Combine(DpACEBase, "Plugins")).GetFiles("*.dll", SearchOption.TopDirectoryOnly).Select(k => k.FullName));
-        }
-        private static Assembly CurrentDomain_AssemblyResolve(object sender, ResolveEventArgs args)
-        {
-            if (args.RequestingAssembly == null)
+            // avoid loading *.resources dlls, because of: https://github.com/dotnet/coreclr/issues/8416
+            if (name.Name.EndsWith("resources"))
             {
                 return null;
             }
-            string assemblyFile = (args.Name.Contains(','))
-                ? args.Name.Substring(0, args.Name.IndexOf(','))
-                : args.Name;
-            assemblyFile += ".dll";
-
-            // first, locate all copies of the required library
-            // favor ACE dlls
-            List<string> foundDlls = ACEDlls.Where(k => Path.GetFileNameWithoutExtension(k) == assemblyFile).ToList();
-            if (foundDlls.Count < 1)
+            IReadOnlyList<RuntimeLibrary> dependencies = DependencyContext.Default.RuntimeLibraries;
+            foreach (RuntimeLibrary library in dependencies)
             {
-                // fallback to and favor this plugin's dlls
-                foundDlls = PluginDlls.Where(k => Path.GetFileNameWithoutExtension(k) == assemblyFile).ToList();
-                if (foundDlls.Count < 1)
+                if (library.Name == name.Name || library.Dependencies.Any(d => d.Name.StartsWith(name.Name)))
                 {
-                    // finally, fallback to the dlls in the other plugins' directories and sort by created, updated time
-                    foundDlls = PluginDlls.Where(k => Path.GetFileNameWithoutExtension(k) == assemblyFile).ToList();
-
+                    return context.LoadFromAssemblyName(new AssemblyName(library.Name));
                 }
             }
-            string targetPath = Path.Combine(currentlyStartingPluginPath, assemblyFile);
-            if (!File.Exists(targetPath))
+            List<Tuple<string, Assembly>> filList = null;
+            Tuple<string, Assembly> fil = GetFavoredDependencyDll(name.Name, ref filList);
+            if (fil != null && !string.IsNullOrWhiteSpace(fil.Item1))
             {
-                log.Error($"Required dependency is missing: {targetPath}");
-                return null;
-            }
-            try
-            {
-                Assembly assem = Assembly.LoadFile(targetPath);
-                log.Info($"{currentlyStartingPlugin} Loaded assembly: {assem.FullName}");
+                Assembly assem = context.LoadFromAssemblyPath(fil.Item1);
+                filList[filList.IndexOf(fil)] = new Tuple<string, Assembly>(filList[filList.IndexOf(fil)].Item1, assem);
+                log.Info($"{curPlugNam} Loaded {fil.Item1}");
                 return assem;
             }
-            catch (Exception)
+            return context.LoadFromAssemblyName(name);
+        }
+        private static Tuple<string, Assembly> GetFavoredDependencyDll(string DLLFileName, ref List<Tuple<string, Assembly>> fileList)
+        {
+            // first, locate all copies of the required library in ACE folder
+            List<Tuple<string, Assembly>> foundDlls = ACEDlls.Where(k => Path.GetFileNameWithoutExtension(k.Item1) == DLLFileName).ToList();
+            if (foundDlls.Count < 1)
             {
-                return null;
+                // fallback and favor this plugin's folder
+                foundDlls = PluginDlls.Where(k => Path.GetDirectoryName(k.Item1) == curPlugPath && Path.GetFileNameWithoutExtension(k.Item1) == DLLFileName).ToList();
+                if (foundDlls.Count < 1)
+                {
+                    // finally, fallback to the dlls in the other plugins' directories
+                    foundDlls = PluginDlls.Except(foundDlls).Where(k => Path.GetDirectoryName(k.Item1) != curPlugPath && Path.GetFileNameWithoutExtension(k.Item1) == DLLFileName).ToList();
+                    if (foundDlls.Count < 1)
+                    {
+                        return null;
+                    }
+                    else { fileList = PluginDlls; }
+                }
+                else { fileList = PluginDlls; }
             }
+            else { fileList = ACEDlls; }
+            return foundDlls.First();  // sort this?
         }
     }
 }

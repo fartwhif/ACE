@@ -1,6 +1,7 @@
 using Nancy;
 using Nancy.Authentication.Stateless;
 using Nancy.Bootstrapper;
+using Nancy.Configuration;
 using Nancy.TinyIoc;
 
 namespace ACE.WebApiServer
@@ -8,6 +9,17 @@ namespace ACE.WebApiServer
     public class NancyBootstrapper : DefaultNancyBootstrapper
     {
         public NancyBootstrapper() { }
+
+        // Override with a valid password (albeit a really really bad one!)
+        // to enable the diagnostics dashboard
+        public override void Configure(INancyEnvironment environment)
+        {
+            environment.Tracing(
+                enabled: true,
+                displayErrorTraces: true);
+
+            base.Configure(environment);
+        }
 
         protected override void ConfigureApplicationContainer(TinyIoCContainer container)
         {
@@ -29,5 +41,6 @@ namespace ACE.WebApiServer
         {
             base.ConfigureRequestContainer(container, context);
         }
+
     }
 }
