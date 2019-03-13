@@ -164,6 +164,8 @@ namespace ACE.Server.Managers.PluginManager
         }
         private static Tuple<string, Assembly> GetFavoredDependencyDll(string DLLFileName, ref List<Tuple<string, Assembly>> fileList)
         {
+            // TO-DO: this needs to keep track of which ones are failing, so it can suggest the next if there are multiple matches, track candidates and return null upon exhaustion or there will be stack overflow
+
             // first, locate all copies of the required library in ACE folder
             List<Tuple<string, Assembly>> foundDlls = ACEDlls.Where(k => Path.GetFileNameWithoutExtension(k.Item1) == DLLFileName).ToList();
             if (foundDlls.Count < 1)
