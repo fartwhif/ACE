@@ -14,6 +14,8 @@ namespace ACE.Server.Network.Managers
 
         private static readonly ConnectionListener[] listeners = new ConnectionListener[2];
 
+        private static InboundPacketQueue inboundQueue = null;
+
         public static void Initialize()
         {
             IPAddress host;
@@ -29,10 +31,12 @@ namespace ACE.Server.Network.Managers
                 host = IPAddress.Any;
             }
 
-            listeners[0] = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port);
+            inboundQueue = new InboundPacketQueue();
+
+            listeners[0] = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port, inboundQueue);
             log.Info($"Binding ConnectionListener to {host}:{ConfigManager.Config.Server.Network.Port}");
 
-            listeners[1] = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port + 1);
+            listeners[1] = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port + 1, inboundQueue);
             log.Info($"Binding ConnectionListener to {host}:{ConfigManager.Config.Server.Network.Port + 1}");
 
             listeners[0].Start();
@@ -45,6 +49,11 @@ namespace ACE.Server.Network.Managers
         public static Socket GetMainSocket()
         {
             return listeners[0].Socket;
+        }
+
+        public static void Shutdown()
+        {
+            inboundQueue.Shutdown();
         }
     }
 }
