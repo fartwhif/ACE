@@ -6,6 +6,7 @@ namespace ACE.Server.Network.Enum
         AuthConnectResponse,
         AuthConnected,
         WorldConnected,
+        AccountBooting, //until session termination system is merged
         NetworkTimeout,
         /// <summary>
         /// a trusted packet had PacketHeaderFlags.NetErrorDisconnect header flag
@@ -14,6 +15,8 @@ namespace ACE.Server.Network.Enum
         /// <summary>
         /// The client connection is no longer able to send us packets with encrypted CRC
         /// </summary>
-        ClientConnectionFailure
+        ClientConnectionFailure,
+        
+        AccountBooted //until session termination system is merged
     }
 }

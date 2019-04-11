@@ -84,7 +84,7 @@ namespace ACE.Server.Network
                 byte[] data = new byte[dataSize];
                 Buffer.BlockCopy(buffer, 0, data, 0, dataSize);
 
-                queueManager.Enqueue(new InboundPacketQueue.RawInboundPacket() { Packet = data, Them = (IPEndPoint)clientEndPoint, Us = listenerEndpoint });
+                queueManager.AddItem(new InboundPacketQueue.RawInboundPacket() { Packet = data, Them = (IPEndPoint)clientEndPoint, Us = listenerEndpoint });
             }
             catch (SocketException socketException)
             {

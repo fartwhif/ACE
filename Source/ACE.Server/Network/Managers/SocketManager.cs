@@ -8,13 +8,17 @@ using ACE.Common;
 
 namespace ACE.Server.Network.Managers
 {
+    /// <summary>
+    /// We use a single socket because the use of dual unidirectional sockets doesn't work for some client firewalls
+    /// </summary>
     public static class SocketManager
     {
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
         private static readonly ConnectionListener[] listeners = new ConnectionListener[2];
-
+        
         private static InboundPacketQueue inboundQueue = null;
+        public static OutboundPacketQueue OutboundQueue { get; private set; }
 
         public static void Initialize()
         {
@@ -39,18 +43,12 @@ namespace ACE.Server.Network.Managers
             listeners[1] = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port + 1, inboundQueue);
             log.Info($"Binding ConnectionListener to {host}:{ConfigManager.Config.Server.Network.Port + 1}");
 
+
             listeners[0].Start();
             listeners[1].Start();
-        }
 
-        /// <summary>
-        /// We use a single socket because the use of dual unidirectional sockets doesn't work for some client firewalls
-        /// </summary>
-        public static Socket GetMainSocket()
-        {
-            return listeners[0].Socket;
+            OutboundQueue = new OutboundPacketQueue(listeners[0].Socket);
         }
-
         public static void Shutdown()
         {
             inboundQueue.Shutdown();

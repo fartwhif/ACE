@@ -120,7 +120,7 @@ namespace ACE.Server.Network
 
             // Check if the player has been booted
             if (bootSession)
-                State = SessionState.NetworkTimeout;
+                State = SessionState.AccountBooting;
         }
 
 

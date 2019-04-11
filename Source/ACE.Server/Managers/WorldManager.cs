@@ -29,6 +29,7 @@ using ACE.Server.Physics.Common;
 
 using Landblock = ACE.Server.Entity.Landblock;
 using Position = ACE.Entity.Position;
+using ACE.Server.Network.Managers;
 
 namespace ACE.Server.Managers
 {
@@ -68,9 +69,11 @@ namespace ACE.Server.Managers
 
         private static readonly ActionQueue actionQueue = new ActionQueue();
         public static readonly DelayManager DelayManager = new DelayManager(); // TODO get rid of this. Each WO should have its own delayManager
+        private static readonly OutboundPacketQueue OutboundQueue = null;
 
         static WorldManager()
         {
+            OutboundQueue = SocketManager.OutboundQueue;
             Physics = new PhysicsEngine(new ObjectMaint(), new SmartBox());
             Physics.Server = true;
         }
@@ -718,8 +721,12 @@ namespace ACE.Server.Managers
 
                 // The session tick outbound processes pending actions and handles outgoing messages
                 ServerPerformanceMonitor.RegisterEventStart(ServerPerformanceMonitor.MonitorType.DoSessionWork_TickOutbound);
+
                 foreach (var s in sessions)
                     s.TickOutbound();
+
+                OutboundQueue.SendAll();
+
                 ServerPerformanceMonitor.RegisterEventEnd(ServerPerformanceMonitor.MonitorType.DoSessionWork_TickOutbound);
 
                 // Removes sessions in the NetworkTimeout state, including sessions that have reached a timeout limit.
@@ -729,6 +736,10 @@ namespace ACE.Server.Managers
                     var sesh = sessions[i];
                     switch (sesh.State)
                     {
+                        case SessionState.AccountBooting:
+                            sesh.DropSession(string.IsNullOrEmpty(sesh.BootSessionReason) ? "account booted" : sesh.BootSessionReason);
+                            sesh.State = SessionState.AccountBooted;
+                            break;
                         case SessionState.NetworkTimeout:
                             sesh.DropSession(string.IsNullOrEmpty(sesh.BootSessionReason) ? "Network Timeout" : sesh.BootSessionReason);
                             break;

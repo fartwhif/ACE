@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ACE.Server.Network
 {
@@ -16,11 +17,10 @@ namespace ACE.Server.Network
             public byte[] Packet { get; set; }
         }
         private static readonly ILog packetLog = LogManager.GetLogger(System.Reflection.Assembly.GetEntryAssembly(), "Packets");
-        private bool ProcessInboundPacketQueue = true;
-        private AutoResetEvent InboundPacketArrived = new AutoResetEvent(false);
-        private ManualResetEvent InboundPacketQueueProcessorExited = new ManualResetEvent(false);
-        private ConcurrentQueue<RawInboundPacket> UnprocessedInboundPackets = new ConcurrentQueue<RawInboundPacket>();
+        private BlockingCollection<RawInboundPacket> UnprocessedInboundPackets = new BlockingCollection<RawInboundPacket>();
+        private Task _readerTask;
         private Thread InboundPacketQueueProcessor = null;
+        public int QueueLength => UnprocessedInboundPackets.Count;
 
         public InboundPacketQueue()
         {
@@ -32,15 +32,14 @@ namespace ACE.Server.Network
         }
         public void Shutdown()
         {
-            ProcessInboundPacketQueue = false;
-            InboundPacketQueueProcessorExited.WaitOne();
+            UnprocessedInboundPackets.CompleteAdding();
+            Task.WaitAll(_readerTask);
         }
         public void Consumer()
         {
-            while (ProcessInboundPacketQueue)
+            _readerTask = Task.Factory.StartNew(() =>
             {
-                RawInboundPacket rip = null;
-                while (UnprocessedInboundPackets.TryDequeue(out rip))
+                foreach (RawInboundPacket rip in UnprocessedInboundPackets.GetConsumingEnumerable())
                 {
                     // TO-DO: generate ban entries here based on packet rates of endPoint, IP Address, and IP Address Range
                     if (packetLog.IsDebugEnabled)
@@ -56,14 +55,12 @@ namespace ACE.Server.Network
                         WorldManager.ProcessPacket(packet, rip.Them, rip.Us);
                     }
                 }
-                InboundPacketArrived.WaitOne(1000);
-            }
-            InboundPacketQueueProcessorExited.Set();
+            });
         }
-        public void Enqueue(RawInboundPacket rip)
+
+        public void AddItem(RawInboundPacket rip)
         {
-            UnprocessedInboundPackets.Enqueue(rip);
-            InboundPacketArrived.Set();
+            UnprocessedInboundPackets.Add(rip);
         }
     }
 }
