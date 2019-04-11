@@ -16,8 +16,8 @@ namespace ACE.Server.Network.Managers
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
         private static readonly ConnectionListener[] listeners = new ConnectionListener[2];
-        
-        private static InboundPacketQueue inboundQueue = null;
+
+        public static InboundPacketQueue InboundQueue { get; private set; }
         public static OutboundPacketQueue OutboundQueue { get; private set; }
 
         public static void Initialize()
@@ -35,14 +35,13 @@ namespace ACE.Server.Network.Managers
                 host = IPAddress.Any;
             }
 
-            inboundQueue = new InboundPacketQueue();
+            InboundQueue = new InboundPacketQueue();
 
-            listeners[0] = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port, inboundQueue);
+            listeners[0] = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port);
             log.Info($"Binding ConnectionListener to {host}:{ConfigManager.Config.Server.Network.Port}");
 
-            listeners[1] = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port + 1, inboundQueue);
+            listeners[1] = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port + 1);
             log.Info($"Binding ConnectionListener to {host}:{ConfigManager.Config.Server.Network.Port + 1}");
-
 
             listeners[0].Start();
             listeners[1].Start();
@@ -51,7 +50,7 @@ namespace ACE.Server.Network.Managers
         }
         public static void Shutdown()
         {
-            inboundQueue.Shutdown();
+            InboundQueue.Shutdown();
         }
     }
 }

@@ -14,15 +14,15 @@ namespace ACE.Server.Network
             public Session Session { get; set; }
             public byte[] Packet { get; set; }
         }
-        private Socket OutboundSocket = null;
+        private Socket SendingSocket = null;
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         private static readonly ILog packetLog = LogManager.GetLogger(System.Reflection.Assembly.GetEntryAssembly(), "Packets");
         private ConcurrentQueue<RawOutboundPacket> UnprocessedOutboundPackets = new ConcurrentQueue<RawOutboundPacket>();
         public int QueueLength => UnprocessedOutboundPackets.Count;
 
-        public OutboundPacketQueue(Socket OutboundSocket)
+        public OutboundPacketQueue(Socket SendingSocket)
         {
-            this.OutboundSocket = OutboundSocket;
+            this.SendingSocket = SendingSocket;
         }
         public void Enqueue(RawOutboundPacket rip)
         {
@@ -31,7 +31,7 @@ namespace ACE.Server.Network
         public void SendAll()
         {
             RawOutboundPacket rop = null;
-            IPEndPoint listenerEndpoint = (IPEndPoint)OutboundSocket.LocalEndPoint;
+            IPEndPoint listenerEndpoint = (IPEndPoint)SendingSocket.LocalEndPoint;
             while (UnprocessedOutboundPackets.TryDequeue(out rop))
             {
                 if ((int)rop.Session.State > 4)
@@ -47,7 +47,7 @@ namespace ACE.Server.Network
                 }
                 try
                 {
-                    OutboundSocket.SendTo(rop.Packet, rop.Packet.Length, SocketFlags.None, rop.Session.EndPoint);
+                    SendingSocket.SendTo(rop.Packet, rop.Packet.Length, SocketFlags.None, rop.Session.EndPoint);
                 }
                 catch (SocketException ex)
                 {

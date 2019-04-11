@@ -1,7 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
-
+using ACE.Server.Network.Managers;
 using log4net;
 
 namespace ACE.Server.Network
@@ -21,14 +21,14 @@ namespace ACE.Server.Network
 
         private readonly IPAddress listeningHost;
 
-        private InboundPacketQueue queueManager = null;
+        private InboundPacketQueue inboundQueue = null;
 
-        public ConnectionListener(IPAddress host, uint port, InboundPacketQueue queueManager)
+        public ConnectionListener(IPAddress host, uint port)
         {
             log.DebugFormat("ConnectionListener ctor, host {0} port {1}", host, port);
             listeningHost = host;
             listeningPort = port;
-            this.queueManager = queueManager;
+            inboundQueue = SocketManager.InboundQueue;
         }
 
         public void Start()
@@ -84,7 +84,7 @@ namespace ACE.Server.Network
                 byte[] data = new byte[dataSize];
                 Buffer.BlockCopy(buffer, 0, data, 0, dataSize);
 
-                queueManager.AddItem(new InboundPacketQueue.RawInboundPacket() { Packet = data, Them = (IPEndPoint)clientEndPoint, Us = listenerEndpoint });
+                inboundQueue.AddItem(new InboundPacketQueue.RawInboundPacket() { Packet = data, Them = (IPEndPoint)clientEndPoint, Us = listenerEndpoint });
             }
             catch (SocketException socketException)
             {
