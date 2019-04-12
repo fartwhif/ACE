@@ -8,11 +8,12 @@ using System.Net.Sockets;
 using System.Text;
 
 using ACE.Server.Managers;
+using ACE.Server.Network.Enum;
 using ACE.Server.Network.GameMessages;
 using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.Network.Handlers;
 using ACE.Server.Network.Managers;
-
+using ACE.Server.Network.Packets;
 using log4net;
 
 namespace ACE.Server.Network
@@ -94,7 +95,7 @@ namespace ACE.Server.Network
 
             ConnectionData.CryptoClient.OnCryptoSystemCatastrophicFailure += (sender, e) =>
             {
-                session.State = Enum.SessionState.ClientConnectionFailure;
+                session.Terminate(SessionTerminationReason.ClientConnectionFailure);
             };
         }
 
@@ -220,9 +221,15 @@ namespace ACE.Server.Network
 
             #region order-insensitive "half-processing"
 
+            if (packet.Header.HasFlag(PacketHeaderFlags.Disconnect))
+            {
+                session.Terminate(SessionTerminationReason.PacketHeaderDisconnect);
+                return;
+            }
+
             if (packet.Header.HasFlag(PacketHeaderFlags.NetErrorDisconnect))
             {
-                session.State = Enum.SessionState.ClientSentNetErrorDisconnect;
+                session.Terminate(SessionTerminationReason.ClientSentNetworkErrorDisconnect);
                 return;
             }
 
@@ -308,7 +315,7 @@ namespace ACE.Server.Network
 
             ServerPacket reqPacket = new ServerPacket();
             byte[] reqData = new byte[4 + (needSeq.Count * 4)];
-            MemoryStream msReqData = new MemoryStream(reqData);
+            MemoryStream msReqData = new MemoryStream(reqData, 0, reqData.Length, true, true);
             msReqData.Write(BitConverter.GetBytes((uint)needSeq.Count), 0, 4);
             needSeq.ForEach(k => msReqData.Write(BitConverter.GetBytes(k), 0, 4));
             reqPacket.Data = msReqData;

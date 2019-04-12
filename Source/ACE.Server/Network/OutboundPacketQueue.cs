@@ -1,3 +1,4 @@
+using ACE.Server.Network.Enum;
 using log4net;
 using System.Collections.Concurrent;
 using System.Net;
@@ -60,7 +61,7 @@ namespace ACE.Server.Network
                     sb.AppendLine(string.Format("[{5}] Sending Packet (Len: {0}) [{1}:{2}=>{3}:{4}]", rop.Packet.Length, listenerEndpoint.Address, listenerEndpoint.Port, rop.Session.EndPoint.Address, rop.Session.EndPoint.Port, rop.Session.Network.ClientId));
                     log.Error(sb.ToString());
 
-                    rop.Session.State = Enum.SessionState.NetworkTimeout; // This will force WorldManager to drop the session
+                    rop.Session.Terminate(SessionTerminationReason.SendToSocketException, null, null, ex.Message);
                 }
             }
         }
