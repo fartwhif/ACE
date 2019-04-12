@@ -35,10 +35,6 @@ namespace ACE.Server.Network
             IPEndPoint listenerEndpoint = (IPEndPoint)SendingSocket.LocalEndPoint;
             while (UnprocessedOutboundPackets.TryDequeue(out rop))
             {
-                if ((int)rop.Session.State > 4)
-                {
-                    continue;
-                }
                 if (packetLog.IsDebugEnabled)
                 {
                     StringBuilder sb = new StringBuilder();
