@@ -2,127 +2,162 @@ using System;
 
 namespace ACE.Common.Cryptography
 {
-    public class ISAAC
-    {
-        private uint offset;
+    /// <summary>
+    /// benchmark comparison with old version of ISAAC (higher is better)
+    /// debug:   new 86%  old 100%
+    /// release: new 112% old 100%
+    /// </summary>
+    public class ISAAC {
+        public const int SIZEL = 8;              /* log of size of rsl[] and mem[] */
+        public const int SIZE = 1 << SIZEL;               /* size of rsl[] and mem[] */
+        public const int MASK = (SIZE - 1) << 2;            /* for pseudorandom lookup */
+        public uint count;                           /* count through the results in rsl[] */
+        public uint[] rsl;                                /* the results given to the user */
+        private uint[] mem;                                   /* the internal state */
+        private uint a;                                              /* accumulator */
+        private uint b;                                          /* the last result */
+        private uint c;              /* counter, guarantees cycle is at least 2^^40 */
 
-        private uint a, b, c;
-        private uint[] mm;
-        private uint[] randRsl;
-
-        public int OverallOffset { get; private set; }
-
-        public ISAAC(byte[] seed)
-        {
-            mm      = new uint[256];
-            randRsl = new uint[256];
-            offset  = 255u;
-
-            Initialize(seed);
-        }
-
-        private bool isReleased;
-
-        public void ReleaseResources()
-        {
-            isReleased = true;
-            mm = null;
-            randRsl = null;
-        }
-
-        public uint GetOffset()
-        {
-            if (isReleased)
-            {
-                return 0;
+        public uint Next() {
+            if (0 == count--) {
+                Isaac();
+                count = SIZE - 1;
             }
-            OverallOffset++;
-
-            var issacValue = randRsl[offset];
-            if (offset > 0)
-                offset--;
-            else
-            {
-                IsaacScramble();
-                offset = 255u;
-            }
-
-            return issacValue;
+            return rsl[count];
         }
 
-        private void Initialize(byte[] keyBytes)
-        {
-            int i;
-            for (i = 0; i < 256; i++)
-                mm[i] = randRsl[i] = 0;
-
-            uint[] abcdefgh = new uint[8];
-            for (i = 0; i < 8; i++)
-                abcdefgh[i] = 0x9E3779B9;
-
-            for (i = 0; i < 4; i++)
-                Shuffle(abcdefgh);
-
-            for (i = 0; i < 2; i++)
-            {
-                int j;
-                for (j = 0; j < 256; j += 8)
-                {
-                    int k;
-                    for (k = 0; k < 8; k++)
-                        abcdefgh[k] += (i < 1) ? randRsl[j + k] : mm[j + k];
-
-                    Shuffle(abcdefgh);
-
-                    for (k = 0; k < 8; k++)
-                        mm[j + k] = abcdefgh[k];
-                }
-            }
-
-            a = BitConverter.ToUInt32(keyBytes, 0);
-            c = b = a;
-
-            IsaacScramble();
+        public ISAAC() {
+            mem = new uint[SIZE];
+            rsl = new uint[SIZE];
+            Init(false);
+        }
+        public void Init(byte[] seed) {
+            var x = BitConverter.ToUInt32(seed, 0);
+            Init2(x, x, x);
         }
 
-        private void IsaacScramble()
-        {
+        private void Init2(uint a, uint b, uint c) {
+            this.a = a;
+            this.b = b;
+            this.c = c;
+
+            mem = new uint[SIZE];
+            rsl = new uint[SIZE];
+            Init(true);
+        }
+
+        /* Generate 256 results.  This is a fast (not small) implementation. */
+        public void Isaac() {
+            uint i, j, x, y;
+
             b += ++c;
-            for (int i = 0; i < 256; i++)
-            {
-                var x = mm[i];
-                switch (i & 3)
-                {
-                    case 0: a ^= (a << 0x0D);
-                        break;
-                    case 1: a ^= (a >> 0x06);
-                        break;
-                    case 2: a ^= (a << 0x02);
-                        break;
-                    case 3: a ^= (a >> 0x10);
-                        break;
-                    default:
-                        break;
-                }
+            for (i = 0, j = SIZE / 2; i < SIZE / 2;) {
+                x = mem[i];
+                a ^= a << 13;
+                a += mem[j++];
+                mem[i] = y = mem[(x & MASK) >> 2] + a + b;
+                rsl[i++] = b = mem[((y >> SIZEL) & MASK) >> 2] + x;
 
-                a += mm[(i + 128) & 0xFF];
+                x = mem[i];
+                a ^= (a >> 6);
+                a += mem[j++];
+                mem[i] = y = mem[(x & MASK) >> 2] + a + b;
+                rsl[i++] = b = mem[((y >> SIZEL) & MASK) >> 2] + x;
 
-                uint y;
-                mm[i]      = y = mm[(int)(x >> 2) & 0xFF] + a + b;
-                randRsl[i] = b = mm[(int)(y >> 10) & 0xFF] + x;
+                x = mem[i];
+                a ^= a << 2;
+                a += mem[j++];
+                mem[i] = y = mem[(x & MASK) >> 2] + a + b;
+                rsl[i++] = b = mem[((y >> SIZEL) & MASK) >> 2] + x;
+
+                x = mem[i];
+                a ^= (a >> 16);
+                a += mem[j++];
+                mem[i] = y = mem[(x & MASK) >> 2] + a + b;
+                rsl[i++] = b = mem[((y >> SIZEL) & MASK) >> 2] + x;
+            }
+
+            for (j = 0; j < SIZE / 2;) {
+                x = mem[i];
+                a ^= a << 13;
+                a += mem[j++];
+                mem[i] = y = mem[(x & MASK) >> 2] + a + b;
+                rsl[i++] = b = mem[((y >> SIZEL) & MASK) >> 2] + x;
+
+                x = mem[i];
+                a ^= (a >> 6);
+                a += mem[j++];
+                mem[i] = y = mem[(x & MASK) >> 2] + a + b;
+                rsl[i++] = b = mem[((y >> SIZEL) & MASK) >> 2] + x;
+
+                x = mem[i];
+                a ^= a << 2;
+                a += mem[j++];
+                mem[i] = y = mem[(x & MASK) >> 2] + a + b;
+                rsl[i++] = b = mem[((y >> SIZEL) & MASK) >> 2] + x;
+
+                x = mem[i];
+                a ^= (a >> 16);
+                a += mem[j++];
+                mem[i] = y = mem[(x & MASK) >> 2] + a + b;
+                rsl[i++] = b = mem[((y >> SIZEL) & MASK) >> 2] + x;
             }
         }
 
-        private void Shuffle(uint[] x)
-        {
-            x[0] ^= x[1] << 0x0B; x[3] += x[0]; x[1] += x[2];
-            x[1] ^= x[2] >> 0x02; x[4] += x[1]; x[2] += x[3];
-            x[2] ^= x[3] << 0x08; x[5] += x[2]; x[3] += x[4];
-            x[3] ^= x[4] >> 0x10; x[6] += x[3]; x[4] += x[5];
-            x[4] ^= x[5] << 0x0A; x[7] += x[4]; x[5] += x[6];
-            x[5] ^= x[6] >> 0x04; x[0] += x[5]; x[6] += x[7];
-            x[6] ^= x[7] << 0x08; x[1] += x[6]; x[7] += x[0];
-            x[7] ^= x[0] >> 0x09; x[2] += x[7]; x[0] += x[1];
+
+        /* initialize, or reinitialize, this instance of rand */
+        public void Init(bool flag) {
+            uint i;
+            uint a, b, c, d, e, f, g, h;
+            a = b = c = d = e = f = g = h = 0x9e3779b9;                        /* the golden ratio */
+
+            for (i = 0; i < 4; ++i) {
+                a ^= b << 11; d += a; b += c;
+                b ^= (c >> 2); e += b; c += d;
+                c ^= d << 8; f += c; d += e;
+                d ^= (e >> 16); g += d; e += f;
+                e ^= f << 10; h += e; f += g;
+                f ^= (g >> 4); a += f; g += h;
+                g ^= h << 8; b += g; h += a;
+                h ^= (a >> 9); c += h; a += b;
+            }
+
+            for (i = 0; i < SIZE; i += 8) {              /* fill in mem[] with messy stuff */
+                if (flag) {
+                    a += rsl[i]; b += rsl[i + 1]; c += rsl[i + 2]; d += rsl[i + 3];
+                    e += rsl[i + 4]; f += rsl[i + 5]; g += rsl[i + 6]; h += rsl[i + 7];
+                }
+                a ^= b << 11; d += a; b += c;
+                b ^= (c >> 2); e += b; c += d;
+                c ^= d << 8; f += c; d += e;
+                d ^= (e >> 16); g += d; e += f;
+                e ^= f << 10; h += e; f += g;
+                f ^= (g >> 4); a += f; g += h;
+                g ^= h << 8; b += g; h += a;
+                h ^= (a >> 9); c += h; a += b;
+                mem[i] = a; mem[i + 1] = b; mem[i + 2] = c; mem[i + 3] = d;
+                mem[i + 4] = e; mem[i + 5] = f; mem[i + 6] = g; mem[i + 7] = h;
+            }
+
+            if (flag) {           /* second pass makes all of seed affect all of mem */
+                for (i = 0; i < SIZE; i += 8) {
+                    a += mem[i]; b += mem[i + 1]; c += mem[i + 2]; d += mem[i + 3];
+                    e += mem[i + 4]; f += mem[i + 5]; g += mem[i + 6]; h += mem[i + 7];
+                    a ^= b << 11; d += a; b += c;
+                    b ^= (c >> 2); e += b; c += d;
+                    c ^= d << 8; f += c; d += e;
+                    d ^= (e >> 16); g += d; e += f;
+                    e ^= f << 10; h += e; f += g;
+                    f ^= (g >> 4); a += f; g += h;
+                    g ^= h << 8; b += g; h += a;
+                    h ^= (a >> 9); c += h; a += b;
+                    mem[i] = a; mem[i + 1] = b; mem[i + 2] = c; mem[i + 3] = d;
+                    mem[i + 4] = e; mem[i + 5] = f; mem[i + 6] = g; mem[i + 7] = h;
+                }
+            }
+
+            Isaac();
+            count = SIZE;
         }
     }
 }

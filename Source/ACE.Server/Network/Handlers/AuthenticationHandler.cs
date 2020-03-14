@@ -16,6 +16,7 @@ using ACE.Server.Network.Enum;
 using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.Network.Managers;
 using ACE.Server.Network.Packets;
+using System.Threading;
 
 namespace ACE.Server.Network.Handlers
 {
@@ -29,6 +30,8 @@ namespace ACE.Server.Network.Handlers
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         private static readonly ILog packetLog = LogManager.GetLogger(System.Reflection.Assembly.GetEntryAssembly(), "Packets");
 
+       
+
         public static void HandleLoginRequest(ClientPacket packet, Session session)
         {
             try
@@ -41,9 +44,16 @@ namespace ACE.Server.Network.Handlers
                     session.Terminate(SessionTerminationReason.AccountInformationInvalid);
                     return;
                 }
-
-                Task t = new Task(() => DoLogin(session, loginRequest));
-                t.Start();
+                if (Interlocked.Increment(ref session.Network.loginTasks) > 1)
+                {
+                    Interlocked.Decrement(ref session.Network.loginTasks);
+                    return;
+                }
+                else
+                {
+                    Task t = new Task(() => DoLogin(session, loginRequest));
+                    t.Start();
+                }
             }
             catch (Exception ex)
             {
@@ -206,6 +216,7 @@ namespace ACE.Server.Network.Handlers
 
             session.SetAccount(account.AccountId, account.AccountName, (AccessLevel)account.AccessLevel);
             session.State = SessionState.AuthConnectResponse;
+            session.Network.LoginCompleteBeginProcessing();
         }
 
         public static void HandleConnectResponse(Session session)

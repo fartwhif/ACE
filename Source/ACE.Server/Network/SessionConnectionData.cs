@@ -69,7 +69,8 @@ namespace ACE.Server.Network
             rand.NextBytes(ServerSeed);
 
             CryptoClient = new CryptoSystem(ClientSeed);
-            IssacServer = new ISAAC(ServerSeed);
+            IssacServer = new ISAAC();
+            IssacServer.Init(ServerSeed);
 
             byte[] bytes = new byte[8];
             rand.NextBytes(bytes);
