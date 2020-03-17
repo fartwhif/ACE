@@ -251,66 +251,8 @@ namespace ACE.Server.Network
                 return;
 
             NetworkStatistics.C2S_Packets_Aggregate_Increment();
-
-            // depending on the current session state:
-            // Set the next timeout tick value, to compare against in the WorldManager
-            // Sessions that have gone past the AuthLoginRequest step will stay active for a longer period of time (exposed via configuration) 
-            // Sessions that in the AuthLoginRequest will have a short timeout, as set in the AuthenticationHandler.DefaultAuthTimeout.
-            // Example: Applications that check uptime will stay in the AuthLoginRequest state.
-            session.Network.TimeoutTick = (session.State == SessionState.AuthLoginRequest) ?
-                DateTime.UtcNow.AddSeconds(AuthenticationHandler.DefaultAuthTimeout).Ticks : // Default is 15s
-                DateTime.UtcNow.AddSeconds(NetworkManager.DefaultSessionTimeout).Ticks; // Default is 60s
-
-            //// Check for packets with a sequence which we have already processed.
-            //// There are some exceptions:
-            //// Sequence 0 as we have several Seq 0 packets during connect.  This also cathes a case where it seems CICMDCommand arrives at any point with 0 sequence value too.
-            //// If the only header on the packet is AckSequence. It seems AckSequence can come in with the same sequence value sometimes.
-            //uint[] byeSeqs = clientPacketQueue.Where(k => packet.Header.Sequence <= lastReceivedPacketSequence && packet.Header.Sequence != 0 &&
-            //                 !(packet.Header.Flags == PacketHeaderFlags.AckSequence && packet.Header.Sequence == lastReceivedPacketSequence)).Select(k => k.Key).ToArray();
-            //    //clientPacketQueue.Where(k => k.Key <= lastReceivedFragmentSequence).Select(k => k.Key).ToArray();
-            //for (int i = 0; i < byeSeqs.Length; i++)
-            //{
-            //    packetLog.WarnFormat("[{0}] Packet {1} was received multiple times and is being discarded as it's already been processed.", session.LoggingIdentifier, byeSeqs[i]);
-            //    clientPacketQueue.TryRemove(byeSeqs[i], out ClientPacket byePkt);
-            //}
-
-            // Check if this packet's sequence is a sequence which we have already processed.
-            // There are some exceptions:
-            // Sequence 0 as we have several Seq 0 packets during connect.  This also cathes a case where it seems CICMDCommand arrives at any point with 0 sequence value too.
-            // If the only header on the packet is AckSequence. It seems AckSequence can come in with the same sequence value sometimes.
-            if (packet.Header.Sequence <= lastReceivedPacketSequence && packet.Header.Sequence != 0 &&
-                !(packet.Header.Flags == PacketHeaderFlags.AckSequence && packet.Header.Sequence == lastReceivedPacketSequence))
-            {
-                if (!packet.Header.HasFlag(PacketHeaderFlags.EncryptedChecksum) && packet.VerifyCRC(ConnectionData.CryptoClient))
-                {
-                    if (packet.Header.HasFlag(PacketHeaderFlags.Disconnect))
-                    {
-                        session.Terminate(SessionTerminationReason.PacketHeaderDisconnect);
-                        return;
-                    }
-                    if (packet.Header.HasFlag(PacketHeaderFlags.NetErrorDisconnect))
-                    {
-                        session.Terminate(SessionTerminationReason.ClientSentNetworkErrorDisconnect);
-                        return;
-                    }
-                }
-                //packetLogger.Warn(this, "[{0}] Packet {1} received again", session.LoggingIdentifier, packet.Header.Sequence);
-                return;
-            }
-
-            // If the client sent a NAK with a cleartext CRC then process it
-            if ((packet.Header.Flags & PacketHeaderFlags.RequestRetransmit) == PacketHeaderFlags.RequestRetransmit
-                && !((packet.Header.Flags & PacketHeaderFlags.EncryptedChecksum) == PacketHeaderFlags.EncryptedChecksum))
-            {
-                foreach (uint sequence in packet.HeaderOptional.RetransmitData)
-                {
-                    Retransmit(sequence);
-                }
-                NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
-                return; //cleartext crc NAK is never accompanied by additional data needed by the rest of the pipeline
-            }
-
             clientPacketQueue.TryAdd(packet.Header.Sequence, packet);
+
             FlushClientPacketQueue();
         }
         /// <summary>
@@ -318,6 +260,51 @@ namespace ACE.Server.Network
         /// </summary>
         private void FlushClientPacketQueue()
         {
+            if (loginTasks > 0 || session.State > SessionState.WorldConnected)
+            {
+                return;
+            }
+
+            while (clientPacketQueue.TryRemove(0, out ClientPacket connectionLessPacket))
+            {
+                if (connectionLessPacket.Header.HasFlag(PacketHeaderFlags.EncryptedChecksum))
+                {
+                    continue;
+                }
+                if (!connectionLessPacket.VerifyCRC(ConnectionData.CryptoClient))
+                {
+                    continue;
+                }
+                if (session.State == SessionState.AuthLoginRequest && connectionLessPacket.Header.HasFlag(PacketHeaderFlags.LoginRequest))
+                {
+                    HandleOrderedPacket(connectionLessPacket);
+                    return;
+                }
+                if (connectionLessPacket.Header.HasFlag(PacketHeaderFlags.Disconnect))
+                {
+                    session.Terminate(SessionTerminationReason.PacketHeaderDisconnect);
+                    return;
+                }
+                if (connectionLessPacket.Header.HasFlag(PacketHeaderFlags.NetErrorDisconnect))
+                {
+                    session.Terminate(SessionTerminationReason.ClientSentNetworkErrorDisconnect);
+                    return;
+                }
+                if (connectionLessPacket.Header.HasFlag(PacketHeaderFlags.RequestRetransmit))
+                {
+                    NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
+                    foreach (uint sequence in connectionLessPacket.HeaderOptional.RetransmitData)
+                    {
+                        Retransmit(sequence);
+                    }
+                }
+            }
+
+            if (clientPacketQueue.IsEmpty)
+            {
+                return;
+            }
+
             var desiredSeq = lastReceivedPacketSequence == 0 ? 0 : lastReceivedPacketSequence + 1;
             while (true)
             {
@@ -340,10 +327,6 @@ namespace ACE.Server.Network
                 }
                 else
                 {
-                    if (desiredSeq == 0 && loginTasks > 0)
-                    {
-                        continue;
-                    }
                     if (!oPacket.VerifyCRC(ConnectionData.CryptoClient))
                     {
                         continue;
@@ -351,44 +334,46 @@ namespace ACE.Server.Network
                     else
                     {
                         packetLog.DebugFormat("[{0}] Processing packet {1}", session.LoggingIdentifier, oPacket.Header.Sequence);
-                        if (oPacket.Header.HasFlag(PacketHeaderFlags.Disconnect))
-                        {
-                            session.Terminate(SessionTerminationReason.PacketHeaderDisconnect);
-                            return;
-                        }
-                        if (oPacket.Header.HasFlag(PacketHeaderFlags.NetErrorDisconnect))
-                        {
-                            session.Terminate(SessionTerminationReason.ClientSentNetworkErrorDisconnect);
-                            return;
-                        }
+
                         // If the client sent a NAK with an XOR CRC then process it
-                        if ((oPacket.Header.Flags & PacketHeaderFlags.RequestRetransmit) == PacketHeaderFlags.RequestRetransmit
-                            && ((oPacket.Header.Flags & PacketHeaderFlags.EncryptedChecksum) == PacketHeaderFlags.EncryptedChecksum))
-                        {
-                            foreach (uint sequence in oPacket.HeaderOptional.RetransmitData)
-                            {
-                                Retransmit(sequence);
-                            }
-                            NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
-                            continue; //cleartext crc NAK is never accompanied by additional data needed by the rest of the pipeline
-                        }
+                        //if ((oPacket.Header.Flags & PacketHeaderFlags.RequestRetransmit) == PacketHeaderFlags.RequestRetransmit
+                        //    && ((oPacket.Header.Flags & PacketHeaderFlags.EncryptedChecksum) == PacketHeaderFlags.EncryptedChecksum))
+                        //{
+                        //    NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
+                        //    foreach (uint sequence in oPacket.HeaderOptional.RetransmitData)
+                        //    {
+                        //        Retransmit(sequence);
+                        //    }
+                        //    continue; //NAK is never accompanied by additional data needed by the rest of the pipeline
+                        //}
+
                         HandleOrderedPacket(oPacket);
                         CheckOutOfOrderFragments();
                     }
                 }
             }
 
+            if (lastReceivedPacketSequence > 2u)
+            {
+                // due to the fact that net layer is still incomplete, arbitrary cleanup is needed.
+                var stragglers = clientPacketQueue.Where(k => k.Key < lastReceivedPacketSequence + 1).Select(k => k.Key).ToArray();
+                ClientPacket straggler = null;
+                for (int i = 0; i < stragglers.Length; i++)
+                {
+                    clientPacketQueue.TryRemove(stragglers[i], out straggler);
+                }
+            }
+
+            if (clientPacketQueue.IsEmpty)
+            {
+                return;
+            }
 
             // Do S2C NAK if necessary
-            if (!clientPacketQueue.IsEmpty && SinceLastS2CRetransmittion.ElapsedMilliseconds > 500)
+            if (SinceLastS2CRetransmittion.ElapsedMilliseconds > 500)
             {
                 var seq = clientPacketQueue.Max(k => k.Key);
-                if (seq == 0 && clientPacketQueue[seq].Header.HasFlag(PacketHeaderFlags.Disconnect))
-                {
-                    session.Terminate(SessionTerminationReason.PacketHeaderDisconnect);
-                    return;
-                }
-                else if (seq > desiredSeq)
+                if (seq > lastReceivedPacketSequence + 2)
                 {
                     DoRequestForRetransmission(seq);
                 }
@@ -439,6 +424,15 @@ namespace ACE.Server.Network
         private void HandleOrderedPacket(ClientPacket packet)
         {
             packetLog.DebugFormat("[{0}] Handling packet {1}", session.LoggingIdentifier, packet.Header.Sequence);
+
+            // depending on the current session state:
+            // Set the next timeout tick value, to compare against in the WorldManager
+            // Sessions that have gone past the AuthLoginRequest step will stay active for a longer period of time (exposed via configuration) 
+            // Sessions that in the AuthLoginRequest will have a short timeout, as set in the AuthenticationHandler.DefaultAuthTimeout.
+            // Example: Applications that check uptime will stay in the AuthLoginRequest state.
+            session.Network.TimeoutTick = (session.State == SessionState.AuthLoginRequest) ?
+                DateTime.UtcNow.AddSeconds(AuthenticationHandler.DefaultAuthTimeout).Ticks : // Default is 15s
+                DateTime.UtcNow.AddSeconds(NetworkManager.DefaultSessionTimeout).Ticks; // Default is 60s
 
             // If we have an EchoRequest flag, we should flag to respond with an echo response on next send.
             if (packet.Header.HasFlag(PacketHeaderFlags.EchoRequest))
