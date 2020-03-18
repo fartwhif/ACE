@@ -1294,6 +1294,10 @@ namespace ACE.Server.Physics
 
             if (transition.SpherePath.CurCell == null) return SetPositionError.NoCell;
 
+            // custom
+            if (ProjectileTarget != null)
+                handle_all_collisions(transition.CollisionInfo, false, false);
+
             if (!SetPositionInternal(transition))
                 return SetPositionError.GeneralFailure;
 
@@ -2261,7 +2265,19 @@ namespace ACE.Server.Physics
                 foreach (var obj in newlyVisible)
                 {
                     var wo = obj.WeenieObj.WorldObject;
-                    if (wo != null)
+
+                    if (wo == null)
+                        continue;
+
+                    if (wo.Teleporting)
+                    {
+                        // ensure post-teleport position is sent
+                        var actionChain = new ActionChain();
+                        actionChain.AddDelayForOneTick();
+                        actionChain.AddAction(player, () => player.TrackObject(wo));
+                        actionChain.EnqueueChain();
+                    }
+                    else
                         player.TrackObject(wo);
                 }
             }
@@ -2285,7 +2301,16 @@ namespace ACE.Server.Physics
             }
             else
             {
-                player.TrackObject(wo);
+                if (wo.Teleporting)
+                {
+                    // ensure post-teleport position is sent
+                    var actionChain = new ActionChain();
+                    actionChain.AddDelayForOneTick();
+                    actionChain.AddAction(player, () => player.TrackObject(wo));
+                    actionChain.EnqueueChain();
+                }
+                else
+                    player.TrackObject(wo);
             }
         }
 

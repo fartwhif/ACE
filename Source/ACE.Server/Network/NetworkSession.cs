@@ -293,10 +293,12 @@ namespace ACE.Server.Network
                 if (connectionLessPacket.Header.HasFlag(PacketHeaderFlags.RequestRetransmit))
                 {
                     NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
-                    foreach (uint sequence in connectionLessPacket.HeaderOptional.RetransmitData)
+                    foreach (uint sequence in connectionLessPacket.HeaderOptional.RetransmitData.OrderBy(k => k))
                     {
                         Retransmit(sequence);
                     }
+                    connectionLessPacket.HeaderOptional.RetransmitData = null; //prevent processing this again in ordered stage
+                    HandleOrderedPacket(connectionLessPacket);
                 }
             }
 
@@ -323,6 +325,15 @@ namespace ACE.Server.Network
                 }
                 if (oPacket == null)
                 {
+                    // Do S2C NAK if necessary
+                    if (!clientPacketQueue.IsEmpty && SinceLastS2CRetransmittion.ElapsedMilliseconds > 500)
+                    {
+                        var seq = clientPacketQueue.Max(k => k.Key);
+                        if (seq > lastReceivedPacketSequence + 2)
+                        {
+                            DoRequestForRetransmission(seq);
+                        }
+                    }
                     break;
                 }
                 else
@@ -334,19 +345,6 @@ namespace ACE.Server.Network
                     else
                     {
                         packetLog.DebugFormat("[{0}] Processing packet {1}", session.LoggingIdentifier, oPacket.Header.Sequence);
-
-                        // If the client sent a NAK with an XOR CRC then process it
-                        //if ((oPacket.Header.Flags & PacketHeaderFlags.RequestRetransmit) == PacketHeaderFlags.RequestRetransmit
-                        //    && ((oPacket.Header.Flags & PacketHeaderFlags.EncryptedChecksum) == PacketHeaderFlags.EncryptedChecksum))
-                        //{
-                        //    NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
-                        //    foreach (uint sequence in oPacket.HeaderOptional.RetransmitData)
-                        //    {
-                        //        Retransmit(sequence);
-                        //    }
-                        //    continue; //NAK is never accompanied by additional data needed by the rest of the pipeline
-                        //}
-
                         HandleOrderedPacket(oPacket);
                         CheckOutOfOrderFragments();
                     }
@@ -369,16 +367,10 @@ namespace ACE.Server.Network
                 return;
             }
 
-            // Do S2C NAK if necessary
-            if (SinceLastS2CRetransmittion.ElapsedMilliseconds > 500)
-            {
-                var seq = clientPacketQueue.Max(k => k.Key);
-                if (seq > lastReceivedPacketSequence + 2)
-                {
-                    DoRequestForRetransmission(seq);
-                }
-            }
+
         }
+
+        const uint MaxNumNakSeqIds = 115; //464 + header = 484;  (464 - 4) / 4
 
         /// <summary>
         /// request retransmission of lost sequences
@@ -390,14 +382,22 @@ namespace ACE.Server.Network
             List<uint> needSeq = new List<uint>();
             needSeq.Add(desiredSeq);
             uint bottom = desiredSeq + 1;
-            if (rcvdSeq - bottom > 128)
+            if (rcvdSeq < bottom || rcvdSeq - bottom > 128)
             {
                 session.Terminate(SessionTerminationReason.AbnormalSequenceReceived);
                 return;
             }
+            uint seqIdCount = 1;
             for (uint a = bottom; a < rcvdSeq; a++)
                 if (!clientPacketQueue.ContainsKey(a))
+                {
                     needSeq.Add(a);
+                    seqIdCount++;
+                    if (seqIdCount >= MaxNumNakSeqIds)
+                    {
+                        break;
+                    }
+                }
 
             ServerPacket reqPacket = new ServerPacket();
             byte[] reqData = new byte[4 + (needSeq.Count * 4)];
@@ -439,6 +439,15 @@ namespace ACE.Server.Network
             {
                 FlagEcho(packet.HeaderOptional.EchoRequestClientTime);
                 VerifyEcho(packet.HeaderOptional.EchoRequestClientTime);
+            }
+
+            if (packet.Header.HasFlag(PacketHeaderFlags.RequestRetransmit) && packet.HeaderOptional.RetransmitData != null)
+            {
+                NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
+                foreach (uint sequence in packet.HeaderOptional.RetransmitData.OrderBy(k => k))
+                {
+                    Retransmit(sequence);
+                }
             }
 
             // If we have an AcknowledgeSequence flag, we can clear our cached packet buffer up to that sequence.
@@ -690,8 +699,10 @@ namespace ACE.Server.Network
                 if (packet.Header.HasFlag(PacketHeaderFlags.EncryptedChecksum) && ConnectionData.PacketSequence.CurrentValue == 0)
                     ConnectionData.PacketSequence = new Sequence.UIntSequence(1);
 
+                bool isNak = packet.Header.Flags.HasFlag(PacketHeaderFlags.RequestRetransmit);
+
                 // If we are only ACKing, then we don't seem to have to increment the sequence
-                if (packet.Header.Flags == PacketHeaderFlags.AckSequence || packet.Header.Flags.HasFlag(PacketHeaderFlags.RequestRetransmit))
+                if (packet.Header.Flags == PacketHeaderFlags.AckSequence || isNak)
                     packet.Header.Sequence = ConnectionData.PacketSequence.CurrentValue;
                 else
                     packet.Header.Sequence = ConnectionData.PacketSequence.NextValue;
@@ -699,7 +710,7 @@ namespace ACE.Server.Network
                 packet.Header.Iteration = 0x14;
                 packet.Header.Time = (ushort)Timers.PortalYearTicks;
 
-                if (packet.Header.Sequence >= 2u)
+                if (packet.Header.Sequence >= 2u && !isNak)
                     cachedPackets.TryAdd(packet.Header.Sequence, packet);
 
                 SendPacket(packet);

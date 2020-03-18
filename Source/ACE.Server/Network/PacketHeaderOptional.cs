@@ -13,7 +13,7 @@ namespace ACE.Server.Network
         public uint AckSequence { get; private set; }
         public double TimeSynch { get; private set; }
         public float EchoRequestClientTime { get; private set; }
-        public List<uint> RetransmitData { get; private set; }
+        public List<uint> RetransmitData { get; set; }
         public bool IsValid { get; private set; } = true;
         public uint FlowBytes { get; private set; }
         public ushort FlowInterval { get; private set; }

@@ -4,7 +4,6 @@ namespace ACE.Common.Cryptography
 {
     public class CryptoSystem : ISAAC
     {
-        public uint Sequence { get; set; } = 0u;
         public uint CurrentKey;
         public CryptoSystem(uint seed) : base()
         {
@@ -19,7 +18,6 @@ namespace ACE.Common.Cryptography
         public void ConsumeKey()
         {
             CurrentKey = Next();
-            Sequence++;
         }
     }
 }
