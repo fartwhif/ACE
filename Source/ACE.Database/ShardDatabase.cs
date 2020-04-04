@@ -12,6 +12,8 @@ using Microsoft.EntityFrameworkCore.Storage;
 
 using log4net;
 
+using ACE.Common;
+using ACE.Common.Extensions;
 using ACE.Database.Entity;
 using ACE.Database.Models.Shard;
 using ACE.Entity.Enum;
@@ -33,12 +35,12 @@ namespace ACE.Database
                 {
                     if (((RelationalDatabaseCreator)context.Database.GetService<IDatabaseCreator>()).Exists())
                     {
-                        log.Debug($"Successfully connected to {config.Database} database on {config.Host}:{config.Port}.");
+                        log.Debug($"[DATABASE] Successfully connected to {config.Database} database on {config.Host}:{config.Port}.");
                         return true;
                     }
                 }
 
-                log.Error($"Attempting to reconnect to {config.Database} database on {config.Host}:{config.Port} in 5 seconds...");
+                log.Error($"[DATABASE] Attempting to reconnect to {config.Database} database on {config.Host}:{config.Port} in 5 seconds...");
 
                 if (retryUntilFound)
                     Thread.Sleep(5000);
@@ -158,9 +160,10 @@ namespace ACE.Database
             BiotaPropertiesString               = 0x200000,
             BiotaPropertiesTextureMap           = 0x400000,
             HousePermission                     = 0x800000,
+            BiotaPropertiesAllegiance           = 0x1000000,
         }
 
-        private static void SetBiotaPopulatedCollections(Biota biota)
+        protected static void SetBiotaPopulatedCollections(Biota biota)
         {
             PopulatedCollectionFlags populatedCollectionFlags = 0;
 
@@ -188,13 +191,12 @@ namespace ACE.Database
             if (biota.BiotaPropertiesString != null && biota.BiotaPropertiesString.Count > 0) populatedCollectionFlags |= PopulatedCollectionFlags.BiotaPropertiesString;
             if (biota.BiotaPropertiesTextureMap != null && biota.BiotaPropertiesTextureMap.Count > 0) populatedCollectionFlags |= PopulatedCollectionFlags.BiotaPropertiesTextureMap;
             if (biota.HousePermission != null && biota.HousePermission.Count > 0) populatedCollectionFlags |= PopulatedCollectionFlags.HousePermission;
+            if (biota.BiotaPropertiesAllegiance != null && biota.BiotaPropertiesAllegiance.Count > 0) populatedCollectionFlags |= PopulatedCollectionFlags.BiotaPropertiesAllegiance;
 
             biota.PopulatedCollectionFlags = (uint)populatedCollectionFlags;
         }
 
-        private static readonly ConditionalWeakTable<Biota, ShardDbContext> BiotaContexts = new ConditionalWeakTable<Biota, ShardDbContext>();
-
-        private static Biota GetBiota(ShardDbContext context, uint id)
+        public virtual Biota GetBiota(ShardDbContext context, uint id, bool doNotAddToCache = false)
         {
             var biota = context.Biota
                 .FirstOrDefault(r => r.Id == id);
@@ -230,20 +232,15 @@ namespace ACE.Database
             if (populatedCollectionFlags.HasFlag(PopulatedCollectionFlags.BiotaPropertiesString)) biota.BiotaPropertiesString = context.BiotaPropertiesString.Where(r => r.ObjectId == biota.Id).ToList();
             if (populatedCollectionFlags.HasFlag(PopulatedCollectionFlags.BiotaPropertiesTextureMap)) biota.BiotaPropertiesTextureMap = context.BiotaPropertiesTextureMap.Where(r => r.ObjectId == biota.Id).ToList();
             if (populatedCollectionFlags.HasFlag(PopulatedCollectionFlags.HousePermission)) biota.HousePermission = context.HousePermission.Where(r => r.HouseId == biota.Id).ToList();
+            if (populatedCollectionFlags.HasFlag(PopulatedCollectionFlags.BiotaPropertiesAllegiance)) biota.BiotaPropertiesAllegiance = context.BiotaPropertiesAllegiance.Where(r => r.AllegianceId == biota.Id).ToList();
 
             return biota;
         }
 
-        public Biota GetBiota(uint id)
+        public virtual Biota GetBiota(uint id, bool doNotAddToCache = false)
         {
-            var context = new ShardDbContext();
-
-            var biota = GetBiota(context, id);
-
-            if (biota != null)
-                BiotaContexts.Add(biota, context);
-
-            return biota;
+            using (var context = new ShardDbContext())
+                return GetBiota(context, id, doNotAddToCache);
         }
 
         public List<Biota> GetBiotasByWcid(uint wcid)
@@ -254,73 +251,100 @@ namespace ACE.Database
 
                 var biotas = new List<Biota>();
                 foreach (var result in results)
-                    biotas.Add(GetBiota(context, result.Id));
+                {
+                    var biota = GetBiota(result.Id);
+                    biotas.Add(biota);
+                }
 
                 return biotas;
             }
         }
 
-        public bool SaveBiota(Biota biota, ReaderWriterLockSlim rwLock)
+        public List<Biota> GetBiotasByType(WeenieType type)
         {
-            if (BiotaContexts.TryGetValue(biota, out var cachedContext))
+            // warning: this query is currently unindexed!
+            using (var context = new ShardDbContext())
             {
+                var iType = (int)type;
+
+                var results = context.Biota.Where(r => r.WeenieType == iType);
+
+                var biotas = new List<Biota>();
+                foreach (var result in results)
+                {
+                    var biota = GetBiota(result.Id);
+                    biotas.Add(biota);
+                }
+
+                return biotas;
+            }
+        }
+
+        protected bool DoSaveBiota(ShardDbContext context, Biota biota)
+        {
+            SetBiotaPopulatedCollections(biota);
+
+            Exception firstException = null;
+            retry:
+
+            try
+            {
+                context.SaveChanges();
+
+                if (firstException != null)
+                    log.Debug($"[DATABASE] DoSaveBiota 0x{biota.Id:X8}:{biota.GetProperty(PropertyString.Name)} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (firstException == null)
+                {
+                    firstException = ex;
+                    goto retry;
+                }
+
+                // Character name might be in use or some other fault
+                log.Error($"[DATABASE] DoSaveBiota 0x{biota.Id:X8}:{biota.GetProperty(PropertyString.Name)} failed first attempt with exception: {firstException}");
+                log.Error($"[DATABASE] DoSaveBiota 0x{biota.Id:X8}:{biota.GetProperty(PropertyString.Name)} failed second attempt with exception: {ex}");
+                return false;
+            }
+        }
+
+        public virtual bool SaveBiota(ACE.Entity.Models.Biota biota, ReaderWriterLockSlim rwLock)
+        {
+            using (var context = new ShardDbContext())
+            {
+                var existingBiota = GetBiota(context, biota.Id);
+
                 rwLock.EnterReadLock();
                 try
                 {
-                    SetBiotaPopulatedCollections(biota);
+                    if (existingBiota == null)
+                    {
+                        existingBiota = ACE.Database.Adapter.BiotaConverter.ConvertFromEntityBiota(biota);
 
-                    try
-                    {
-                        cachedContext.SaveChanges();
-                        return true;
+                        context.Biota.Add(existingBiota);
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        // Character name might be in use or some other fault
-                        log.Error($"SaveBiota failed with exception: {ex}");
-                        return false;
+                        ACE.Database.Adapter.BiotaUpdater.UpdateDatabaseBiota(context, biota, existingBiota);
                     }
                 }
                 finally
                 {
                     rwLock.ExitReadLock();
                 }
-            }
 
-            var context = new ShardDbContext();
-
-            BiotaContexts.Add(biota, context);
-
-            rwLock.EnterReadLock();
-            try
-            {
-                SetBiotaPopulatedCollections(biota);
-
-                context.Biota.Add(biota);
-
-                try
-                {
-                    context.SaveChanges();
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    // Character name might be in use or some other fault
-                    log.Error($"SaveBiota failed with exception: {ex}");
-                    return false;
-                }
-            }
-            finally
-            {
-                rwLock.ExitReadLock();
+                return DoSaveBiota(context, existingBiota);
             }
         }
 
-        public bool SaveBiotasInParallel(IEnumerable<(Biota biota, ReaderWriterLockSlim rwLock)> biotas)
+        public bool SaveBiotasInParallel(IEnumerable<(ACE.Entity.Models.Biota biota, ReaderWriterLockSlim rwLock)> biotas)
         {
             var result = true;
 
-            Parallel.ForEach(biotas, biota =>
+            Parallel.ForEach(biotas, ConfigManager.Config.Server.Threading.DatabaseParallelOptions, biota =>
             {
                 if (!SaveBiota(biota.biota, biota.rwLock))
                     result = false;
@@ -329,66 +353,58 @@ namespace ACE.Database
             return result;
         }
 
-        public bool RemoveBiota(Biota biota, ReaderWriterLockSlim rwLock)
+        public virtual bool RemoveBiota(uint id)
         {
-            if (BiotaContexts.TryGetValue(biota, out var cachedContext))
+            using (var context = new ShardDbContext())
             {
-                BiotaContexts.Remove(biota);
+                var existingBiota = context.Biota
+                    .AsNoTracking()
+                    .FirstOrDefault(r => r.Id == id);
 
-                rwLock.EnterReadLock();
+                if (existingBiota == null)
+                    return true;
+
+                context.Biota.Remove(existingBiota);
+
+                Exception firstException = null;
+                retry:
+
                 try
                 {
-                    cachedContext.Biota.Remove(biota);
+                    context.SaveChanges();
 
-                    try
-                    {
-                        cachedContext.SaveChanges();
-                        return true;
-                    }
-                    catch (Exception ex)
-                    {
-                        // Character name might be in use or some other fault
-                        log.Error($"RemoveBiota failed with exception: {ex}");
-                        return false;
-                    }
+                    if (firstException != null)
+                        log.Debug($"[DATABASE] RemoveBiota 0x{id:X8} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+
+                    return true;
                 }
-                finally
+                catch (Exception ex)
                 {
-                    rwLock.ExitReadLock();
+                    if (firstException == null)
+                    {
+                        firstException = ex;
+                        goto retry;
+                    }
+
+                    // Character name might be in use or some other fault
+                    log.Error($"[DATABASE] RemoveBiota 0x{id:X8} failed first attempt with exception: {firstException}");
+                    log.Error($"[DATABASE] RemoveBiota 0x{id:X8} failed second attempt with exception: {ex}");
+                    return false;
                 }
             }
-
-            // If we got here, the biota didn't come from the database through this class.
-            // Most likely, it doesn't exist in the database, so, no need to remove.
-            return true;
         }
 
-        public bool RemoveBiotasInParallel(IEnumerable<(Biota biota, ReaderWriterLockSlim rwLock)> biotas)
+        public bool RemoveBiotasInParallel(IEnumerable<uint> ids)
         {
             var result = true;
 
-            Parallel.ForEach(biotas, biota =>
+            Parallel.ForEach(ids, ConfigManager.Config.Server.Threading.DatabaseParallelOptions, id =>
             {
-                if (!RemoveBiota(biota.biota, biota.rwLock))
+                if (!RemoveBiota(id))
                     result = false;
             });
 
             return result;
-        }
-
-        public void FreeBiotaAndDisposeContext(Biota biota)
-        {
-            if (BiotaContexts.TryGetValue(biota, out var context))
-            {
-                BiotaContexts.Remove(biota);
-                context.Dispose();
-            }
-        }
-
-        public void FreeBiotaAndDisposeContexts(IEnumerable<Biota> biotas)
-        {
-            foreach (var biota in biotas)
-                FreeBiotaAndDisposeContext(biota);
         }
 
 
@@ -413,7 +429,7 @@ namespace ACE.Database
                     .Where(r => r.Type == (ushort)PropertyInstanceId.Container && r.Value == parentId)
                     .ToList();
 
-                Parallel.ForEach(results, result =>
+                Parallel.ForEach(results, ConfigManager.Config.Server.Threading.DatabaseParallelOptions, result =>
                 {
                     var biota = GetBiota(result.ObjectId);
 
@@ -447,7 +463,7 @@ namespace ACE.Database
                     .Where(r => r.Type == (ushort)PropertyInstanceId.Wielder && r.Value == parentId)
                     .ToList();
 
-                Parallel.ForEach(results, result =>
+                Parallel.ForEach(results, ConfigManager.Config.Server.Threading.DatabaseParallelOptions, result =>
                 {
                     var biota = GetBiota(result.ObjectId);
 
@@ -463,13 +479,16 @@ namespace ACE.Database
         {
             var staticObjects = new List<Biota>();
 
-            var staticLandblockId = 0x70000 | landblockId;
+            var staticLandblockId = (uint)(0x70000 | landblockId);
+
+            var min = staticLandblockId << 12;
+            var max = min | 0xFFF;
 
             using (var context = new ShardDbContext())
             {
                 context.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
 
-                var results = context.Biota.Where(b => b.Id >> 12 == staticLandblockId).ToList();
+                var results = context.Biota.Where(b => b.Id >= min && b.Id <= max).ToList();
 
                 foreach (var result in results)
                 {
@@ -481,38 +500,19 @@ namespace ACE.Database
             return staticObjects;
         }
 
-        public List<Biota> GetStaticObjectsByLandblockInParallel(ushort landblockId)
-        {
-            var staticObjects = new ConcurrentBag<Biota>();
-
-            var staticLandblockId = 0x70000 | landblockId;
-
-            using (var context = new ShardDbContext())
-            {
-                context.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
-
-                var results = context.Biota.Where(b => b.Id >> 12 == staticLandblockId).ToList();
-
-                Parallel.ForEach(results, result =>
-                {
-                    var biota = GetBiota(result.Id);
-                    staticObjects.Add(biota);
-                });
-            }
-
-            return staticObjects.ToList();
-        }
-
         public List<Biota> GetDynamicObjectsByLandblock(ushort landblockId)
         {
             var dynamics = new List<Biota>();
+
+            var min = (uint)(landblockId << 16);
+            var max = min | 0xFFFF;
 
             using (var context = new ShardDbContext())
             {
                 context.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
 
                 var results = context.BiotaPropertiesPosition
-                    .Where(p => p.PositionType == 1 && p.ObjCellId >> 16 == landblockId && p.ObjectId >= 0x80000000)
+                    .Where(p => p.PositionType == 1 && p.ObjCellId >= min && p.ObjCellId <= max && p.ObjectId >= 0x80000000)
                     .ToList();
 
                 foreach (var result in results)
@@ -532,37 +532,6 @@ namespace ACE.Database
             }
 
             return dynamics;
-        }
-
-        public List<Biota> GetDynamicObjectsByLandblockInParallel(ushort landblockId)
-        {
-            var dynamics = new ConcurrentBag<Biota>();
-
-            using (var context = new ShardDbContext())
-            {
-                context.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
-
-                var results = context.BiotaPropertiesPosition
-                    .Where(p => p.PositionType == 1 && p.ObjCellId >> 16 == landblockId && p.ObjectId >= 0x80000000)
-                    .ToList();
-
-                Parallel.ForEach(results, result =>
-                {
-                    var biota = GetBiota(result.ObjectId);
-
-                    // Filter out objects that are in a container
-                    if (biota.BiotaPropertiesIID.FirstOrDefault(r => r.Type == 2 && r.Value != 0) != null)
-                        return;
-
-                    // Filter out wielded objects
-                    if (biota.BiotaPropertiesIID.FirstOrDefault(r => r.Type == 3 && r.Value != 0) != null)
-                        return;
-
-                    dynamics.Add(biota);
-                });
-            }
-
-            return dynamics.ToList();
         }
 
         public List<Biota> GetHousesOwned()
@@ -599,12 +568,13 @@ namespace ACE.Database
             var context = new ShardDbContext();
 
             var results = context.Character
-                .Include(r => r.CharacterPropertiesContract)
+                .Include(r => r.CharacterPropertiesContractRegistry)
                 .Include(r => r.CharacterPropertiesFillCompBook)
                 .Include(r => r.CharacterPropertiesFriendList)
                 .Include(r => r.CharacterPropertiesQuestRegistry)
                 .Include(r => r.CharacterPropertiesShortcutBar)
                 .Include(r => r.CharacterPropertiesSpellBar)
+                .Include(r => r.CharacterPropertiesSquelch)
                 .Include(r => r.CharacterPropertiesTitleBook)
                 .Where(r => r.AccountId == accountId && (includeDeleted || !r.IsDeleted))
                 .ToList();
@@ -615,7 +585,7 @@ namespace ACE.Database
             return results;
         }
 
-        public Character GetCharacterByName(string name) // When searching by name, only non-deleted characters matter
+        public Character GetCharacterStubByName(string name) // When searching by name, only non-deleted characters matter
         {
             var context = new ShardDbContext();
 
@@ -627,10 +597,24 @@ namespace ACE.Database
                 //.Include(r => r.CharacterPropertiesShortcutBar)
                 //.Include(r => r.CharacterPropertiesSpellBar)
                 //.Include(r => r.CharacterPropertiesTitleBook)
-                .Where(r => r.Name == name.ToLower() && !r.IsDeleted)
-                .FirstOrDefault();
+                .FirstOrDefault(r => r.Name == name.ToLower() && !r.IsDeleted);
 
-            CharacterContexts.Add(result, context);
+            return result;
+        }
+
+        public Character GetCharacterStubByGuid(uint guid)
+        {
+            var context = new ShardDbContext();
+
+            var result = context.Character
+                //.Include(r => r.CharacterPropertiesContract)
+                //.Include(r => r.CharacterPropertiesFillCompBook)
+                //.Include(r => r.CharacterPropertiesFriendList)
+                //.Include(r => r.CharacterPropertiesQuestRegistry)
+                //.Include(r => r.CharacterPropertiesShortcutBar)
+                //.Include(r => r.CharacterPropertiesSpellBar)
+                //.Include(r => r.CharacterPropertiesTitleBook)
+                .FirstOrDefault(r => r.Id == guid);
 
             return result;
         }
@@ -642,15 +626,29 @@ namespace ACE.Database
                 rwLock.EnterReadLock();
                 try
                 {
+                    Exception firstException = null;
+                    retry:
+
                     try
                     {
                         cachedContext.SaveChanges();
+
+                        if (firstException != null)
+                            log.Debug($"[DATABASE] SaveCharacter 0x{character.Id:X8}:{character.Name} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+
                         return true;
                     }
                     catch (Exception ex)
                     {
+                        if (firstException == null)
+                        {
+                            firstException = ex;
+                            goto retry;
+                        }
+
                         // Character name might be in use or some other fault
-                        log.Error($"SaveCharacter failed with exception: {ex}");
+                        log.Error($"[DATABASE] SaveCharacter 0x{character.Id:X8}:{character.Name} failed first attempt with exception: {firstException}");
+                        log.Error($"[DATABASE] SaveCharacter 0x{character.Id:X8}:{character.Name} failed second attempt with exception: {ex}");
                         return false;
                     }
                 }
@@ -669,15 +667,29 @@ namespace ACE.Database
             {
                 context.Character.Add(character);
 
+                Exception firstException = null;
+                retry:
+
                 try
                 {
                     context.SaveChanges();
+
+                    if (firstException != null)
+                        log.Debug($"[DATABASE] SaveCharacter 0x{character.Id:X8}:{character.Name} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+
                     return true;
                 }
                 catch (Exception ex)
                 {
+                    if (firstException == null)
+                    {
+                        firstException = ex;
+                        goto retry;
+                    }
+
                     // Character name might be in use or some other fault
-                    log.Error($"SaveCharacter failed with exception: {ex}");
+                    log.Error($"[DATABASE] SaveCharacter 0x{character.Id:X8}:{character.Name} failed first attempt with exception: {firstException}");
+                    log.Error($"[DATABASE] SaveCharacter 0x{character.Id:X8}:{character.Name} failed second attempt with exception: {ex}");
                     return false;
                 }
             }
@@ -688,7 +700,7 @@ namespace ACE.Database
         }
 
 
-        public bool AddCharacterInParallel(Biota biota, ReaderWriterLockSlim biotaLock, IEnumerable<(Biota biota, ReaderWriterLockSlim rwLock)> possessions, Character character, ReaderWriterLockSlim characterLock)
+        public bool AddCharacterInParallel(ACE.Entity.Models.Biota biota, ReaderWriterLockSlim biotaLock, IEnumerable<(ACE.Entity.Models.Biota biota, ReaderWriterLockSlim rwLock)> possessions, Character character, ReaderWriterLockSlim characterLock)
         {
             if (!SaveBiota(biota, biotaLock))
                 return false; // Biota save failed which mean Character fails.
@@ -706,9 +718,9 @@ namespace ACE.Database
         /// <summary>
         /// This will get all player biotas that are backed by characters that are not deleted.
         /// </summary>
-        public List<Biota> GetAllPlayerBiotasInParallel()
+        public List<ACE.Entity.Models.Biota> GetAllPlayerBiotasInParallel()
         {
-            var biotas = new ConcurrentBag<Biota>();
+            var biotas = new ConcurrentBag<ACE.Entity.Models.Biota>();
 
             using (var context = new ShardDbContext())
             {
@@ -719,9 +731,16 @@ namespace ACE.Database
 
                 Parallel.ForEach(results, result =>
                 {
-                    var biota = GetBiota(result.Id);
+                    var biota = GetBiota(result.Id, true);
 
-                    biotas.Add(biota);
+                    if (biota != null)
+                    {
+                        var convertedBiota = ACE.Database.Adapter.BiotaConverter.ConvertToEntityBiota(biota);
+
+                        biotas.Add(convertedBiota);
+                    }
+                    else
+                        log.Error($"ShardDatabase.GetAllPlayerBiotasInParallel() - couldn't find biota for character 0x{result.Id:X8}");
                 });
             }
 

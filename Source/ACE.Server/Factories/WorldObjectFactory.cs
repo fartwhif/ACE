@@ -5,12 +5,14 @@ using System.Linq;
 using log4net;
 
 using ACE.Database;
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
 using ACE.Entity;
 using ACE.Entity.Enum;
+using ACE.Entity.Models;
 using ACE.Server.Managers;
 using ACE.Server.WorldObjects;
+
+using Biota = ACE.Database.Models.Shard.Biota;
+using LandblockInstance = ACE.Database.Models.World.LandblockInstance;
 
 namespace ACE.Server.Factories
 {
@@ -26,7 +28,7 @@ namespace ACE.Server.Factories
             if (weenie == null || guid == null)
                 return null;
 
-            var objWeenieType = (WeenieType)weenie.Type;
+            var objWeenieType = weenie.WeenieType;
 
             switch (objWeenieType)
             {
@@ -113,7 +115,7 @@ namespace ACE.Server.Factories
                 case WeenieType.Hooker:
                     return new Hooker(weenie, guid);
                 case WeenieType.HousePortal:
-                    return new WorldObjects.HousePortal(weenie, guid);
+                    return new HousePortal(weenie, guid);
                 case WeenieType.SkillAlterationDevice:
                     return new SkillAlterationDevice(weenie, guid);
                 case WeenieType.PressurePlate:
@@ -128,6 +130,12 @@ namespace ACE.Server.Factories
                     return new Allegiance(weenie, guid);
                 case WeenieType.AugmentationDevice:
                     return new AugmentationDevice(weenie, guid);
+                case WeenieType.AttributeTransferDevice:
+                    return new AttributeTransferDevice(weenie, guid);
+                case WeenieType.CraftTool:
+                    return new CraftTool(weenie, guid);
+                case WeenieType.LightSource:
+                    return new LightSource(weenie, guid);
                 default:
                     return new GenericObject(weenie, guid);
             }
@@ -137,11 +145,9 @@ namespace ACE.Server.Factories
         /// Restore a WorldObject from the database.
         /// Any properties tagged as Ephemeral will be removed from the biota.
         /// </summary>
-        public static WorldObject CreateWorldObject(Biota biota)
+        public static WorldObject CreateWorldObject(ACE.Entity.Models.Biota biota)
         {
-            var objWeenieType = (WeenieType)biota.WeenieType;
-
-            switch (objWeenieType)
+            switch (biota.WeenieType)
             {
                 case WeenieType.Undef:
                     return null;
@@ -224,7 +230,7 @@ namespace ACE.Server.Factories
                 case WeenieType.Hooker:
                     return new Hooker(biota);
                 case WeenieType.HousePortal:
-                    return new WorldObjects.HousePortal(biota);
+                    return new HousePortal(biota);
                 case WeenieType.SkillAlterationDevice:
                     return new SkillAlterationDevice(biota);
                 case WeenieType.PressurePlate:
@@ -239,9 +245,26 @@ namespace ACE.Server.Factories
                     return new Allegiance(biota);
                 case WeenieType.AugmentationDevice:
                     return new AugmentationDevice(biota);
+                case WeenieType.AttributeTransferDevice:
+                    return new AttributeTransferDevice(biota);
+                case WeenieType.CraftTool:
+                    return new CraftTool(biota);
+                case WeenieType.LightSource:
+                    return new LightSource(biota);
                 default:
                     return new GenericObject(biota);
             }
+        }
+
+        /// <summary>
+        /// Restore a WorldObject from the database.
+        /// Any properties tagged as Ephemeral will be removed from the biota.
+        /// </summary>
+        public static WorldObject CreateWorldObject(Biota databaseBiota)
+        {
+            var biota = ACE.Database.Adapter.BiotaConverter.ConvertToEntityBiota(databaseBiota);
+
+            return CreateWorldObject(biota);
         }
 
         /// <summary>
@@ -276,6 +299,12 @@ namespace ACE.Server.Factories
                 else
                 {
                     worldObject = CreateWorldObject(biota);
+
+                    if (worldObject.Location == null)
+                    {
+                        log.Warn($"CreateNewWorldObjects: {worldObject.Name} (0x{worldObject.Guid}) Location was null. CreationTimestamp = {worldObject.CreationTimestamp} ({Common.Time.GetDateTimeFromTimestamp(worldObject.CreationTimestamp ?? 0).ToLocalTime()}) | Location restored from world db instance.");
+                        worldObject.Location = new Position(instance.ObjCellId, instance.OriginX, instance.OriginY, instance.OriginZ, instance.AnglesX, instance.AnglesY, instance.AnglesZ, instance.AnglesW);
+                    }
                 }
 
                 if (worldObject != null)
@@ -298,7 +327,7 @@ namespace ACE.Server.Factories
         /// <summary>
         /// Creates a list of WorldObjects from a list of Biotas
         /// </summary>
-        public static List<WorldObject> CreateWorldObjects(List<Biota> biotas)
+        public static List<WorldObject> CreateWorldObjects(List<ACE.Database.Models.Shard.Biota> biotas)
         {
             var results = new List<WorldObject>();
 
@@ -348,7 +377,33 @@ namespace ACE.Server.Factories
             if (weenie == null)
                 return null;
 
-            return CreateNewWorldObject(weenie.ClassId);
+            return CreateNewWorldObject(weenie.WeenieClassId);
+        }
+
+        /// <summary>
+        /// Creates a new WorldObject from a CreateList item
+        /// </summary>
+        public static WorldObject CreateNewWorldObject(PropertiesCreateList item)
+        {
+            var isTreasure = (item.DestinationType & DestinationType.Treasure) != 0;
+
+            var wo = CreateNewWorldObject(item.WeenieClassId);
+
+            if (wo == null) return null;
+
+            wo.DestinationType = (DestinationType)item.DestinationType;
+
+            if (item.StackSize > 1)
+                wo.SetStackSize(item.StackSize);
+
+            if (item.Palette > 0)
+                wo.PaletteTemplate = item.Palette;
+
+            // if treasure, this is probability instead of shade
+            if (!isTreasure && item.Shade >= 0)
+                wo.Shade = item.Shade;
+
+            return wo;
         }
     }
 }

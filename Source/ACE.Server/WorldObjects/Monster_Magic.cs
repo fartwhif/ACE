@@ -1,8 +1,10 @@
 using System;
-using System.Linq;
-using ACE.Database.Models.Shard;
+using System.Collections.Generic;
+
+using ACE.Common;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Entity.Models;
 using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
 using ACE.Server.Network.GameMessages.Messages;
@@ -18,12 +20,12 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Returns TRUE if monster is a spell caster
         /// </summary>
-        public bool IsCaster { get => Biota.BiotaPropertiesSpellBook.Count > 0; }
+        public bool IsCaster { get => Biota.HasKnownSpell(BiotaDatabaseLock); }
 
         /// <summary>
         /// The next spell the monster will attempt to cast
         /// </summary>
-        public BiotaPropertiesSpellBook CurrentSpell { get; set; }
+        public KeyValuePair<int, float> CurrentSpell { get; set; }
 
         /// <summary>
         /// The delay after casting a magic spell
@@ -52,30 +54,52 @@ namespace ACE.Server.WorldObjects
             return skill.InitLevel + skill.Ranks;
         }
 
-        /// <summary>
-        /// Returns the sum of all probabilities from monster's spell_book
-        /// </summary>
-        public float GetSpellProbability()
+        public float GetProbabilityAny()
         {
-            var probability = 0.0f;
+            var probabilities = new List<float>();
 
-            foreach (var spell in Biota.BiotaPropertiesSpellBook)
-                probability += spell.Probability;
+            foreach (var spell in Biota.GetKnownSpellsProbabilities(BiotaDatabaseLock))
+            {
+                var probability = spell > 2.0f ? spell - 2.0f : spell / 100.0f;
 
-            return probability;
+                probabilities.Add(probability);
+            }
+
+            return Probability.GetProbabilityAny(probabilities);
         }
 
-        /// <summary>
-        /// Rolls for a chance to cast magic spell
-        /// </summary>
-        public bool RollCastMagic()
+        public Spell TryRollSpell()
         {
-            var probability = GetSpellProbability();
-            //Console.WriteLine("Spell probability: " + probability);
+            CurrentSpell = new KeyValuePair<int, float>();
 
-            var rng = ThreadSafeRandom.Next(0.0f, 100.0f);
-            //var rng = ThreadSafeRandom.Next(0.0f, probability);
-            return rng < probability;
+            //Console.WriteLine($"{Name}.TryRollSpell(), probability={GetProbabilityAny()}");
+
+            // monster spellbooks have probabilities with base 2.0
+            // ie. a 5% chance would be 2.05 instead of 0.05
+
+            // much less common, some monsters will have spells with just base 2.0 probability
+            // there were probably other criteria used to select these spells (emote responses, monster ai responses)
+            // for now, 2.0 base just becomes a 2% chance
+
+            if (Biota.PropertiesSpellBook == null)
+                return null;
+
+            // We don't use thread safety here. Monster spell books aren't mutated cross-threads.
+            // This reduces memory consumption by not cloning the spell book every single TryRollSpell()
+            //foreach (var spell in Biota.CloneSpells(BiotaDatabaseLock)) // Thread-safe
+            foreach (var spell in Biota.PropertiesSpellBook) // Not thread-safe
+            {
+                var probability = spell.Value > 2.0f ? spell.Value - 2.0f : spell.Value / 100.0f;
+
+                var rng = ThreadSafeRandom.Next(0.0f, 1.0f);
+                if (rng < probability)
+                {
+                    CurrentSpell = spell;
+                    return new Spell(spell.Key);
+                }
+            }
+
+            return null;
         }
 
         // todo: monster spellcasting anim speed?
@@ -124,7 +148,7 @@ namespace ACE.Server.WorldObjects
 
             if (target == null || !target.IsAlive)
             {
-                Sleep();
+                FindNextTarget();
                 return;
             }
 
@@ -165,89 +189,57 @@ namespace ACE.Server.WorldObjects
         {
             if (AttackTarget == null) return;
 
-            bool? resisted;
-            //var spell = GetCurrentSpell();
-
             var targetSelf = spell.Flags.HasFlag(SpellFlags.SelfTargeted);
-            var target = targetSelf ? this : AttackTarget;
+            var untargeted = spell.NonComponentTargetType == ItemType.None;
 
-            var player = AttackTarget as Player;
- 
+            var target = AttackTarget;
+            if (untargeted)
+                target = null;
+            else if (targetSelf)
+                target = this;
+
+            // try to resist spell, if applicable
+            if (TryResistSpell(target, spell))
+                return;
+
             switch (spell.School)
             {
                 case MagicSchool.WarMagic:
 
-                    WarMagic(AttackTarget, spell);
+                    WarMagic(target, spell, this);
                     break;
 
                 case MagicSchool.LifeMagic:
 
-                    resisted = ResistSpell(target, spell);
-                    if (!targetSelf && (resisted == true)) break;
-                    if (resisted == null)
-                    {
-                        log.Error("Something went wrong with the Magic resistance check");
-                        break;
-                    }
-                    var targetDeath = LifeMagic(target, spell, out uint damage, out bool critical, out var msg);
+                    var targetDeath = LifeMagic(spell, out uint damage, out bool critical, out var msg, target);
                     if (targetDeath && target is Creature targetCreature)
                     {
-                        targetCreature.OnDeath(this, DamageType.Health, false);
+                        targetCreature.OnDeath(new DamageHistoryInfo(this), DamageType.Health, false);
                         targetCreature.Die();
                     }
-                    EnqueueBroadcast(new GameMessageScript(target.Guid, spell.TargetEffect, spell.Formula.Scale));
+                    if (target != null)
+                        EnqueueBroadcast(new GameMessageScript(target.Guid, spell.TargetEffect, spell.Formula.Scale));
+
                     break;
 
                 case MagicSchool.CreatureEnchantment:
 
-                    resisted = ResistSpell(target, spell);
-                    if (!targetSelf && (resisted == true)) break;
-                    if (resisted == null)
-                    {
-                        log.Error("Something went wrong with the Magic resistance check");
-                        break;
-                    }
                     CreatureMagic(target, spell);
-                    EnqueueBroadcast(new GameMessageScript(target.Guid, spell.TargetEffect, spell.Formula.Scale));
+
+                    if (target != null)
+                        EnqueueBroadcast(new GameMessageScript(target.Guid, spell.TargetEffect, spell.Formula.Scale));
+
                     break;
 
                 case MagicSchool.VoidMagic:
 
-                    if (spell.NumProjectiles == 0)
-                    {
-                        resisted = ResistSpell(target, spell);
-                        if (!targetSelf && (resisted == true)) break;
-                        if (resisted == null)
-                        {
-                            log.Error("Something went wrong with the Magic resistance check");
-                            break;
-                        }
-                    }
-                    VoidMagic(AttackTarget, spell);
-                    if (spell.NumProjectiles == 0)
+                    VoidMagic(target, spell, this);
+
+                    if (spell.NumProjectiles == 0 && target != null)
                         EnqueueBroadcast(new GameMessageScript(target.Guid, spell.TargetEffect, spell.Formula.Scale));
+
                     break;
             }
-        }
-
-        /// <summary>
-        /// Selects a random spell from the monster's spell book
-        /// according to the probabilities
-        /// </summary>
-        public BiotaPropertiesSpellBook GetRandomSpell()
-        {
-            var probability = GetSpellProbability();
-            var rng = ThreadSafeRandom.Next(0.0f, probability);
-
-            var currentSpell = 0.0f;
-            foreach (var spell in Biota.BiotaPropertiesSpellBook)
-            {
-                if (rng < currentSpell + spell.Probability)
-                    return spell;
-
-                currentSpell += spell.Probability;
-            }
-            return Biota.BiotaPropertiesSpellBook.Last();
         }
 
         /// <summary>
@@ -270,7 +262,7 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public Spell GetCurrentSpell()
         {
-            return new Spell(CurrentSpell.Spell);
+            return new Spell(CurrentSpell.Key);
         }
 
         public bool UseMana()

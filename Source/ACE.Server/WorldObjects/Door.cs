@@ -1,10 +1,10 @@
 using System;
+
 using ACE.Common;
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Entity.Models;
 using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
 using ACE.Server.Network.GameEvent.Events;
@@ -35,7 +35,7 @@ namespace ACE.Server.WorldObjects
 
         private void SetEphemeralValues()
         {
-            BaseDescriptionFlags |= ObjectDescriptionFlag.Door;
+            ObjectDescriptionFlags |= ObjectDescriptionFlag.Door;
 
             if (!DefaultOpen)
             {
@@ -47,29 +47,22 @@ namespace ACE.Server.WorldObjects
             {
                 CurrentMotionState = motionOpen;
                 IsOpen = true;
-                //Ethereal = true;
+                Ethereal = true;
             }
 
             ResetInterval = ResetInterval ?? 30.0f;
-            ResistLockpick = ResistLockpick ?? 0;
             LockCode = LockCode ?? "";
 
-            // If we had the base weenies this would be the way to go
-            ////if (DefaultLocked)
-            ////    IsLocked = true;
-            ////else
-            ////    IsLocked = false;
-
-            // But since we don't know what doors were DefaultLocked, let's assume for now that any door that starts Locked should default as such.
-            if (IsLocked)
+            // Account for possible missing property from recreated weenies
+            if (IsLocked && !DefaultLocked)
                 DefaultLocked = true;
-        }
 
-        private double? useLockTimestamp;
-        private double? UseLockTimestamp
-        {
-            get { return useLockTimestamp; }
-            set => useLockTimestamp = Time.GetUnixTime();
+            if (DefaultLocked)
+                IsLocked = true;
+            else
+                IsLocked = false;
+
+            ActivationResponse |= ActivationResponse.Use;
         }
 
         public string LockCode
@@ -78,10 +71,21 @@ namespace ACE.Server.WorldObjects
             set { if (value == null) RemoveProperty(PropertyString.LockCode); else SetProperty(PropertyString.LockCode, value); }
         }
 
+        public override void OnTalk(WorldObject activator)
+        {
+            if (activator is Player player)
+            {
+                var behind = player != null && player.GetRelativeDir(this).HasFlag(Quadrant.Back);
+
+                if (IsOpen && !behind) // not sure if retail made this distinction, but for the doors tested, it seemed more logical given the text shown
+                    player.Session.Network.EnqueueSend(new GameMessageSystemChat(ActivationTalk, ChatMessageType.Broadcast));
+            }
+        }
+
         public override void ActOnUse(WorldObject worldObject)
         {
             var player = worldObject as Player;
-            var behind = player != null && player.GetSplatterDir(this).Contains("Back");
+            var behind = player != null && player.GetRelativeDir(this).HasFlag(Quadrant.Back);
 
             if (!IsLocked || behind)
             {
@@ -91,9 +95,11 @@ namespace ACE.Server.WorldObjects
                     Close(worldObject.Guid);
 
                 // Create Door auto close timer
-                ActionChain autoCloseTimer = new ActionChain();
+                var useTimestamp = UseTimestamp ?? 0;
+
+                var autoCloseTimer = new ActionChain();
                 autoCloseTimer.AddDelaySeconds(ResetInterval ?? 0);
-                autoCloseTimer.AddAction(this, () => Reset());
+                autoCloseTimer.AddAction(this, () => Reset(useTimestamp));
                 autoCloseTimer.EnqueueChain();
             }
             else
@@ -114,33 +120,47 @@ namespace ACE.Server.WorldObjects
 
             EnqueueBroadcastMotion(motionOpen);
             CurrentMotionState = motionOpen;
+
             Ethereal = true;
             IsOpen = true;
-            //CurrentLandblock?.EnqueueBroadcast(Location, Landblock.MaxObjectRange, new GameMessagePublicUpdatePropertyBool(Sequences, Guid, PropertyBool.Ethereal, Ethereal ?? true));
-            //CurrentLandblock?.EnqueueBroadcast(Location, Landblock.MaxObjectRange, new GameMessagePublicUpdatePropertyBool(Sequences, Guid, PropertyBool.Open, IsOpen ?? true));
+
+            EnqueueBroadcastPhysicsState();
+
             if (opener.Full > 0)
-                UseTimestamp++;
+                UseTimestamp = Time.GetUnixTime();
         }
 
-        private void Close(ObjectGuid closer = new ObjectGuid())
+        public void Close(ObjectGuid closer = new ObjectGuid())
         {
             if (CurrentMotionState == motionClosed)
                 return;
 
             EnqueueBroadcastMotion(motionClosed);
             CurrentMotionState = motionClosed;
-            Ethereal = false;
+
             IsOpen = false;
-            //CurrentLandblock?.EnqueueBroadcast(Location, Landblock.MaxObjectRange, new GameMessagePublicUpdatePropertyBool(Sequences, Guid, PropertyBool.Ethereal, Ethereal ?? false));
-            //CurrentLandblock?.EnqueueBroadcast(Location, Landblock.MaxObjectRange, new GameMessagePublicUpdatePropertyBool(Sequences, Guid, PropertyBool.Open, IsOpen ?? false));
+
+            var animTime = Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, MotionStance.NonCombat, MotionCommand.On, MotionCommand.Off);
+
+            //Console.WriteLine($"AnimTime: {animTime}");
+
+            var actionChain = new ActionChain();
+            actionChain.AddDelaySeconds(animTime);
+            actionChain.AddAction(this, () =>
+            {
+                Ethereal = false;
+
+                EnqueueBroadcastPhysicsState();
+            });
+            actionChain.EnqueueChain();
+
             if (closer.Full > 0)
-                UseTimestamp++;
+                UseTimestamp = Time.GetUnixTime();
         }
 
-        private void Reset()
+        private void Reset(double useTimestamp)
         {
-            if ((Time.GetUnixTime() - UseTimestamp) < ResetInterval)
-                return;
+            if (useTimestamp != UseTimestamp) return;
 
             if (!DefaultOpen)
             {
@@ -149,14 +169,13 @@ namespace ACE.Server.WorldObjects
                 {
                     IsLocked = true;
                     var updateProperty = new GameMessagePublicUpdatePropertyBool(this, PropertyBool.Locked, IsLocked);
-                    var sound = new GameMessageSound(Guid, Sound.OpenFailDueToLock, 1.0f); // TODO: This should probably come 1.5 seconds after the door closes so that sounds don't overlap
-                    EnqueueBroadcast(updateProperty, sound);
+                    EnqueueBroadcast(updateProperty);
                 }
             }
             else
                 Open(ObjectGuid.Invalid);
 
-            ResetTimestamp++;
+            ResetTimestamp = Time.GetUnixTime();
         }
 
         /// <summary>
@@ -171,9 +190,9 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Used for unlocking a door via a key
         /// </summary>
-        public UnlockResults Unlock(uint unlockerGuid, string keyCode)
+        public UnlockResults Unlock(uint unlockerGuid, Key key, string keyCode = null)
         {
-            return LockHelper.Unlock(this, keyCode);
+            return LockHelper.Unlock(this, key, keyCode);
         }
 
         public override void SetLinkProperties(WorldObject wo)

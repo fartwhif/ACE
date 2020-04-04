@@ -88,6 +88,11 @@ namespace ACE.Entity.Enum.Properties
         CombatUse                                = 51,
         [ServerOnly]
         ParentLocation                           = 52,
+        /// <summary>
+        /// TODO: Migrate inventory order away from this and instead use the new InventoryOrder property
+        /// TODO: PlacementPosition is used (very sparingly) in cache.bin, so it has (or had) a meaning at one point before we hijacked it
+        /// TODO: and used it for our own inventory order
+        /// </summary>
         [ServerOnly]
         PlacementPosition                        = 53,
         WeaponEncumbrance                        = 54,
@@ -136,7 +141,6 @@ namespace ACE.Entity.Enum.Properties
         PhysicsState                             = 93,
         [ServerOnly]
         TargetType                               = 94,
-        [Ephemeral]
         RadarBlipColor                           = 95,
         EncumbranceCapacity                      = 96,
         LoginTimestamp                           = 97,
@@ -236,6 +240,7 @@ namespace ACE.Entity.Enum.Properties
         GemType                                  = 178,
         ImbuedEffect                             = 179,
         AttackersRawSkillValue                   = 180,
+        [SendOnLogin]
         ChessRank                                = 181,
         ChessTotalGames                          = 182,
         ChessGamesWon                            = 183,
@@ -259,7 +264,7 @@ namespace ACE.Entity.Enum.Properties
         [SendOnLogin]
         HousePurchaseTimestamp                   = 199,
         RedirectableEquippedArmorCount           = 200,
-        MeleedefenseImbuedEffectTypeCache        = 201,
+        MeleeDefenseImbuedEffectTypeCache        = 201,
         MissileDefenseImbuedEffectTypeCache      = 202,
         MagicDefenseImbuedEffectTypeCache        = 203,
         ElementalDamageBonus                     = 204,
@@ -358,6 +363,7 @@ namespace ACE.Entity.Enum.Properties
         EquipmentSetId                           = 265,
         PetClass                                 = 266,
         Lifespan                                 = 267,
+        [Ephemeral]
         RemainingLifespan                        = 268,
         UseCreateQuantity                        = 269,
         WieldRequirements2                       = 270,
@@ -383,10 +389,15 @@ namespace ACE.Entity.Enum.Properties
         HearLocalSignals                         = 290,
         HearLocalSignalsRadius                   = 291,
         Cleaving                                 = 292,
+        [SendOnLogin]
         AugmentationSpecializeGearcraft          = 293,
+        [SendOnLogin]
         AugmentationInfusedCreatureMagic         = 294,
+        [SendOnLogin]
         AugmentationInfusedItemMagic             = 295,
+        [SendOnLogin]
         AugmentationInfusedLifeMagic             = 296,
+        [SendOnLogin]
         AugmentationInfusedWarMagic              = 297,
         [SendOnLogin]
         AugmentationCriticalExpertise            = 298,
@@ -394,7 +405,9 @@ namespace ACE.Entity.Enum.Properties
         AugmentationCriticalPower                = 299,
         [SendOnLogin]
         AugmentationSkilledMelee                 = 300,
+        [SendOnLogin]
         AugmentationSkilledMissile               = 301,
+        [SendOnLogin]
         AugmentationSkilledMagic                 = 302,
         ImbuedEffect2                            = 303,
         ImbuedEffect3                            = 304,
@@ -432,12 +445,11 @@ namespace ACE.Entity.Enum.Properties
         HealingBoostRating                       = 323,
         HeritageSpecificArmor                    = 324,
         AlternateRacialSkills                    = 325,
-        /// <summary>
-        /// why was this defaulted to 1?  leaving comment
-        /// </summary>
         [SendOnLogin]
         AugmentationJackOfAllTrades              = 326,
+        [SendOnLogin]
         AugmentationResistanceNether             = 327,
+        [SendOnLogin]
         AugmentationInfusedVoidMagic             = 328,
         [SendOnLogin]
         WeaknessRating                           = 329,
@@ -454,6 +466,7 @@ namespace ACE.Entity.Enum.Properties
         LumAugCritDamageRating                   = 335,
         [SendOnLogin]
         LumAugCritReductionRating                = 336,
+        [SendOnLogin]
         LumAugSurgeEffectRating                  = 337,
         [SendOnLogin]
         LumAugSurgeChanceRating                  = 338,
@@ -461,6 +474,7 @@ namespace ACE.Entity.Enum.Properties
         LumAugItemManaUsage                      = 339,
         [SendOnLogin]
         LumAugItemManaGain                       = 340,
+        [SendOnLogin]
         LumAugVitality                           = 341,
         [SendOnLogin]
         LumAugHealingRating                      = 342,
@@ -468,6 +482,7 @@ namespace ACE.Entity.Enum.Properties
         LumAugSkilledCraft                       = 343,
         [SendOnLogin]
         LumAugSkilledSpec                        = 344,
+        [SendOnLogin]
         LumAugNoDestroyCraft                     = 345,
         RestrictInteraction                      = 346,
         OlthoiLootTimestamp                      = 347,
@@ -491,6 +506,7 @@ namespace ACE.Entity.Enum.Properties
         WeaponAuraDamage                         = 360,
         [SendOnLogin]
         WeaponAuraSpeed                          = 361,
+        [SendOnLogin]
         SummoningMastery                         = 362,
         HeartbeatLifespan                        = 363,
         UseLevelRequirement                      = 364,
@@ -549,6 +565,14 @@ namespace ACE.Entity.Enum.Properties
 
         [ServerOnly]
         PCAPRecordedAutonomousMovement           = 8007,
+        [ServerOnly]
+        PCAPRecordedMaxVelocityEstimated         = 8030,
+        [ServerOnly]
+        PCAPRecordedPlacement                    = 8041,
+        [ServerOnly]
+        PCAPRecordedAppraisalPages               = 8042,
+        [ServerOnly]
+        PCAPRecordedAppraisalMaxPages            = 8043,
 
         //[ServerOnly]
         //TotalLogins                              = 9001,
@@ -572,6 +596,25 @@ namespace ACE.Entity.Enum.Properties
         AllegianceOfficerRank                   = 9010,
         [ServerOnly]
         HouseRentTimestamp                      = 9011,
+        /// <summary>
+        ///  Stores the player's selected hairstyle at creation or after a barber use. This is used only for Gear Knights and Olthoi characters who have more than a single part/texture for a "hairstyle" (BodyStyle)
+        /// </summary>
+        [ServerOnly]
+        Hairstyle                               = 9012,
+        /// <summary>
+        /// Used to store the calculated Clothing Priority for use with armor reduced items and items like Over-Robes.
+        /// </summary>
+        [Ephemeral][ServerOnly]
+        VisualClothingPriority                  = 9013,
+        [ServerOnly]
+        SquelchGlobal                           = 9014,
+
+        /// <summary>
+        /// TODO: This is a place holder for future use. See PlacementPosition
+        /// This is the sort order for items in a container
+        /// </summary>
+        [ServerOnly]
+        InventoryOrder                          = 9015,
     }
 
     public static class PropertyIntExtensions
@@ -660,6 +703,7 @@ namespace ACE.Entity.Enum.Properties
                     return System.Enum.GetName(typeof(PhysicsState), value);
                 case PropertyInt.HookPlacement:
                 case PropertyInt.Placement:
+                case PropertyInt.PCAPRecordedPlacement:
                     return System.Enum.GetName(typeof(Placement), value);
                 case PropertyInt.PortalBitmask:
                     return System.Enum.GetName(typeof(PortalBitmask), value);
@@ -705,6 +749,9 @@ namespace ACE.Entity.Enum.Properties
                     return System.Enum.GetName(typeof(Placement), value);
                 case PropertyInt.HouseStatus:
                     return System.Enum.GetName(typeof(HouseStatus), value);
+
+                case PropertyInt.UseCreatesContractId:
+                    return System.Enum.GetName(typeof(ContractId), value);
             }
 
             return null;

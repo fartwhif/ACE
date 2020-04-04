@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
-using ACE.Entity;
+
 using ACE.Entity.Enum;
 using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
 using ACE.Server.Network.GameEvent.Events;
+using ACE.Server.Physics;
 using ACE.Server.Physics.Animation;
 
 namespace ACE.Server.WorldObjects
@@ -17,7 +18,7 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// The target this player is currently performing a melee attack on
         /// </summary>
-        public WorldObject MeleeTarget;
+        public Creature MeleeTarget;
 
         private float _powerLevel;
 
@@ -40,80 +41,153 @@ namespace ACE.Server.WorldObjects
                 return PowerAccuracy.High;
         }
 
+        public AttackQueue AttackQueue;
+
         /// <summary>
         /// Called when a player first initiates a melee attack
         /// </summary>
         public void HandleActionTargetedMeleeAttack(uint targetGuid, uint attackHeight, float powerLevel)
         {
-            /*Console.WriteLine("HandleActionTargetedMeleeAttack");
-            Console.WriteLine("Target ID: " + guid.Full.ToString("X8"));
-            Console.WriteLine("Attack height: " + attackHeight);
-            Console.WriteLine("Power level: " + powerLevel);*/
+            //log.Info($"-");
 
-            // sanity check
+            if (CombatMode != CombatMode.Melee)
+            {
+                log.Error($"{Name}.HandleActionTargetedMeleeAttack({targetGuid:X8}, {attackHeight}, {powerLevel}) - CombatMode mismatch {CombatMode}, LastCombatMode {LastCombatMode}");
+
+                if (LastCombatMode == CombatMode.Melee)
+                    CombatMode = CombatMode.Melee;
+                else
+                    return;
+            }
+
+            if (IsBusy || Teleporting || suicideInProgress)
+            {
+                SendWeenieError(WeenieError.YoureTooBusy);
+                return;
+            }
+
+            if (FastTick && !PhysicsObj.TransientState.HasFlag(TransientStateFlags.OnWalkable))
+            {
+                SendWeenieError(WeenieError.YouCantDoThatWhileInTheAir);
+                return;
+            }
+
+            if (PKLogout)
+            {
+                SendWeenieError(WeenieError.YouHaveBeenInPKBattleTooRecently);
+                return;
+            }
+
+            // verify input
             powerLevel = Math.Clamp(powerLevel, 0.0f, 1.0f);
 
             AttackHeight = (AttackHeight)attackHeight;
-            PowerLevel = powerLevel;
+            AttackQueue.Add(powerLevel);
 
-            // get world object of target guid
+            if (MeleeTarget == null)
+                PowerLevel = AttackQueue.Fetch();
+
+            // already in melee loop?
+            if (Attacking || MeleeTarget != null && MeleeTarget.IsAlive)
+                return;
+
+            // get world object for target creature
             var target = CurrentLandblock?.GetObject(targetGuid);
+
             if (target == null)
             {
-                log.Warn($"Unknown target guid {targetGuid:X8}");
+                //log.Debug($"{Name}.HandleActionTargetedMeleeAttack({targetGuid:X8}, {AttackHeight}, {powerLevel}) - couldn't find target guid");
                 return;
             }
+
             var creatureTarget = target as Creature;
             if (creatureTarget == null)
             {
-                log.Warn($"Target GUID not creature {targetGuid:X8}");
+                log.Warn($"{Name}.HandleActionTargetedMeleeAttack({targetGuid:X8}, {AttackHeight}, {powerLevel}) - target guid not creature");
                 return;
             }
 
-            if (MeleeTarget == null)
+            if (!CanDamage(creatureTarget) || !creatureTarget.IsAlive)
+                return;     // werror?
+
+            //log.Info($"{Name}.HandleActionTargetedMeleeAttack({targetGuid:X8}, {attackHeight}, {powerLevel})");
+
+            MeleeTarget = creatureTarget;
+            AttackTarget = MeleeTarget;
+
+            // reset PrevMotionCommand / DualWieldAlternate each time button is clicked
+            PrevMotionCommand = MotionCommand.Invalid;
+            DualWieldAlternate = false;
+
+            var attackSequence = ++AttackSequence;
+
+            if (NextRefillTime > DateTime.UtcNow)
             {
-                MeleeTarget = target;
-                AttackTarget = MeleeTarget;
+                var delayTime = (float)(NextRefillTime - DateTime.UtcNow).TotalSeconds;
+
+                var actionChain = new ActionChain();
+                actionChain.AddDelaySeconds(delayTime);
+                actionChain.AddAction(this, () =>
+                {
+                    if (!creatureTarget.IsAlive) return;
+
+                    HandleActionTargetedMeleeAttack_Inner(target, attackSequence);
+                });
+                actionChain.EnqueueChain();
             }
             else
-                return;
+                HandleActionTargetedMeleeAttack_Inner(target, attackSequence);
+        }
 
-            // get distance from target
-            var dist = GetDistance(target);
+        public static readonly float MeleeDistance  = 0.6f;
+        public static readonly float StickyDistance = 4.0f;
+        public static readonly float RepeatDistance = 16.0f;
 
-            // get angle to target
-            var angle = GetAngle(target);
+        public void HandleActionTargetedMeleeAttack_Inner(WorldObject target, int attackSequence)
+        {
+            var dist = GetCylinderDistance(target);
 
-            //Console.WriteLine("Dist: " + dist);
-            //Console.WriteLine("Angle: " + angle);
-
-            // turn / moveto if required
-            if (IsStickyDistance(target) && IsDirectVisible(target))
+            if (dist <= MeleeDistance || dist <= StickyDistance && IsMeleeVisible(target))
             {
                 // sticky melee
                 var rotateTime = Rotate(target);
+
                 var actionChain = new ActionChain();
                 actionChain.AddDelaySeconds(rotateTime);
-                actionChain.AddAction(this, () => Attack(target));
+                actionChain.AddAction(this, () => Attack(target, attackSequence));
                 actionChain.EnqueueChain();
             }
             else
             {
+                // turn / move to required
                 if (GetCharacterOption(CharacterOption.UseChargeAttack))
                 {
+                    //log.Info($"{Name}.MoveTo({target.Name})");
+
                     // charge attack
                     MoveTo(target);
                 }
                 else
                 {
-                    // move to
+                    //log.Info($"{Name}.CreateMoveToChain({target.Name})");
+
                     CreateMoveToChain(target, (success) =>
                     {
                         if (success)
-                            Attack(target);
+                            Attack(target, attackSequence);
+                        else
+                            Session.Network.EnqueueSend(new GameEventAttackDone(Session));
                     });
                 }
             }
+        }
+
+        public void OnAttackDone()
+        {
+            MeleeTarget = null;
+            MissileTarget = null;
+
+            AttackQueue.Clear();
         }
 
         /// <summary>
@@ -121,10 +195,9 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public void HandleActionCancelAttack()
         {
-            //Console.WriteLine("HandleActionCancelAttack");
+            //Console.WriteLine($"{Name}.HandleActionCancelAttack()");
 
-            MeleeTarget = null;
-            MissileTarget = null;
+            OnAttackDone();
 
             PhysicsObj.cancel_moveto();
         }
@@ -132,18 +205,35 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Performs a player melee attack against a target
         /// </summary>
-        public void Attack(WorldObject target)
+        public void Attack(WorldObject target, int attackSequence)
         {
-            if (CombatMode != CombatMode.Melee || MeleeTarget == null || !IsAlive)
+            //log.Info($"{Name}.Attack({target.Name}, {attackSequence})");
+
+            if (AttackSequence != attackSequence)
                 return;
+
+            if (CombatMode != CombatMode.Melee || MeleeTarget == null || IsBusy || !IsAlive || suicideInProgress)
+            {
+                OnAttackDone();
+                return;
+            }
 
             var creature = target as Creature;
             if (creature == null || !creature.IsAlive)
+            {
+                OnAttackDone();
                 return;
+            }
 
             var animLength = DoSwingMotion(target, out var attackFrames);
             if (animLength == 0)
+            {
+                OnAttackDone();
                 return;
+            }
+
+            // point of no return beyond this point -- cannot be cancelled
+            Attacking = true;
 
             var weapon = GetEquippedMeleeWeapon();
             var attackType = GetWeaponAttackType(weapon);
@@ -163,7 +253,12 @@ namespace ACE.Server.WorldObjects
                 numStrikes = attackFrames.Count;
             }
 
+            // handle self-procs
+            TryProcEquippedItems(this, true);
+
             var prevTime = 0.0f;
+            bool targetProc = false;
+
             for (var i = 0; i < numStrikes; i++)
             {
                 // are there animation hooks for damage frames?
@@ -174,13 +269,29 @@ namespace ACE.Server.WorldObjects
 
                 actionChain.AddAction(this, () =>
                 {
-                    DamageTarget(creature, weapon);
+                    if (IsDead)
+                    {
+                        Attacking = false;
+                        OnAttackDone();
+                        return;
+                    }
+
+                    var damageEvent = DamageTarget(creature, weapon);
+
+                    // handle target procs
+                    if (damageEvent != null && damageEvent.HasDamage && !targetProc)
+                    {
+                        TryProcEquippedItems(creature, false);
+                        targetProc = true;
+                    }
 
                     if (weapon != null && weapon.IsCleaving)
                     {
                         var cleave = GetCleaveTarget(creature, weapon);
                         foreach (var cleaveHit in cleave)
                             DamageTarget(cleaveHit, weapon);
+
+                        // target procs don't happen for cleaving
                     }
                 });
 
@@ -194,22 +305,32 @@ namespace ACE.Server.WorldObjects
             actionChain.AddAction(this, () =>
             {
                 Session.Network.EnqueueSend(new GameEventAttackDone(Session));
+                Attacking = false;
 
-                if (creature.IsAlive && GetCharacterOption(CharacterOption.AutoRepeatAttacks))
+                // powerbar refill timing
+                var refillMod = IsDualWieldAttack ? 0.8f : 1.0f;    // dual wield powerbar refills 20% faster
+
+                PowerLevel = AttackQueue.Fetch();
+
+                var nextRefillTime = PowerLevel * refillMod;
+                NextRefillTime = DateTime.UtcNow.AddSeconds(nextRefillTime);
+
+                var dist = GetCylinderDistance(target);
+
+                if (creature.IsAlive && GetCharacterOption(CharacterOption.AutoRepeatAttacks) && (dist <= MeleeDistance || dist <= StickyDistance && IsMeleeVisible(target)))
                 {
                     Session.Network.EnqueueSend(new GameEventCombatCommenceAttack(Session));
                     Session.Network.EnqueueSend(new GameEventAttackDone(Session));
 
-                    // powerbar refill timing
-                    var refillMod = IsDualWieldAttack ? 0.8f : 1.0f;    // dual wield powerbar refills 20% faster
-
                     var nextAttack = new ActionChain();
-                    nextAttack.AddDelaySeconds(PowerLevel * refillMod);
-                    nextAttack.AddAction(this, () => Attack(target));
+                    nextAttack.AddDelaySeconds(nextRefillTime);
+                    nextAttack.AddAction(this, () => Attack(target, attackSequence));
                     nextAttack.EnqueueChain();
                 }
                 else
-                    MeleeTarget = null;
+                {
+                    OnAttackDone();
+                }
             });
 
             actionChain.EnqueueChain();
@@ -244,88 +365,45 @@ namespace ACE.Server.WorldObjects
             CurrentMotionState = motion;
 
             EnqueueBroadcastMotion(motion);
+
+            if (FastTick)
+                PhysicsObj.stick_to_object(target.Guid.Full);
+
             return animLength;
         }
 
+        public static readonly float KickThreshold = 0.75f;
+
+        public MotionCommand PrevMotionCommand;
+
         /// <summary>
-        /// Returns the melee swing animation, based on current stance and weapon
+        /// Returns the melee swing animation - based on weapon,
+        /// current stance, power bar, and attack height
         /// </summary>
-        public override MotionCommand GetSwingAnimation()
+        public MotionCommand GetSwingAnimation()
         {
-            MotionCommand motion = new MotionCommand();
+            if (IsDualWieldAttack)
+                DualWieldAlternate = !DualWieldAlternate;
 
-            switch (CurrentMotionState.Stance)
+            var offhand = IsDualWieldAttack && !DualWieldAlternate;
+
+            var weapon = GetEquippedMeleeWeapon();
+
+            if (weapon != null)
             {
-                case MotionStance.SwordCombat:
-                case MotionStance.SwordShieldCombat:
-                case MotionStance.TwoHandedSwordCombat:
-                case MotionStance.TwoHandedStaffCombat:
-                case MotionStance.DualWieldCombat:
-                    {
-                        // handle dual wielding weapon alternating
-                        if (IsDualWieldAttack) DualWieldAlternate = !DualWieldAlternate;
-
-                        var weapon = GetEquippedMeleeWeapon();
-                        var attackType = GetWeaponAttackType(weapon);
-
-                        var action = PowerLevel < 0.33f && attackType.HasFlag(AttackType.Thrust) ? "Thrust" : "Slash";
-
-                        // handle multistrike weapons
-                        action = MultiStrike(attackType, action);
-
-                        if (IsDualWieldAttack && !DualWieldAlternate)
-                            action = "Offhand" + action;
-
-                        // this is very strange:
-                        // sword + no shield has slash, but not thrust
-                        // sword + shield has thrust, but not slash...
-                        if (CurrentMotionState.Stance == MotionStance.SwordCombat)
-                        {
-                            if (action.Contains("Double") || action.Contains("Triple"))
-                                action = action.Replace("Thrust", "Slash");
-                        }
-                        else if (CurrentMotionState.Stance == MotionStance.SwordShieldCombat)
-                        {
-                            if (action.Contains("Double") || action.Contains("Triple"))
-                                action = action.Replace("Slash", "Thrust");
-                        }
-
-                        Enum.TryParse(action + GetAttackHeight(), out motion);
-                        return motion;
-                    }
-                case MotionStance.HandCombat:
-                default:
-                    {
-                        // is the player holding a weapon?
-                        var weapon = GetEquippedMeleeWeapon();
-
-                        // no weapon: power range 1-3
-                        // unarmed weapon: power range 1-2
-                        if (weapon == null)
-                            Enum.TryParse("Attack" + GetAttackHeight() + (int)GetPowerRange(), out motion);
-                        else
-                            Enum.TryParse("Attack" + GetAttackHeight() + Math.Min((int)GetPowerRange(), 2), out motion);
-
-                        return motion;
-                    }
+                AttackType = weapon.GetAttackType(CurrentMotionState.Stance, PowerLevel, offhand);
             }
-        }
+            else
+            {
+                AttackType = PowerLevel > KickThreshold ? AttackType.Kick : AttackType.Punch;
+            }
 
-        public bool IsMeleeDistance(WorldObject target)
-        {
-            // always use spheres?
-            var cylDist = (float)Physics.Common.Position.CylinderDistance(PhysicsObj.GetRadius(), PhysicsObj.GetHeight(), PhysicsObj.Position,
-                target.PhysicsObj.GetRadius(), target.PhysicsObj.GetHeight(), target.PhysicsObj.Position);
+            var motion = CombatTable.GetMotion(CurrentMotionState.Stance, AttackHeight.Value, AttackType, PrevMotionCommand);
+            PrevMotionCommand = motion;
 
-            return cylDist <= 0.6f;
-        }
+            //Console.WriteLine($"{motion}");
 
-        public bool IsStickyDistance(WorldObject target)
-        {
-            var cylDist = (float)Physics.Common.Position.CylinderDistance(PhysicsObj.GetRadius(), PhysicsObj.GetHeight(), PhysicsObj.Position,
-                target.PhysicsObj.GetRadius(), target.PhysicsObj.GetHeight(), target.PhysicsObj.Position);
-
-            return cylDist <= 4.0f;
+            return motion;
         }
     }
 }

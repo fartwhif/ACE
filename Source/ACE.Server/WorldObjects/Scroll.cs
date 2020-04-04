@@ -1,9 +1,8 @@
 using System;
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
+
 using ACE.Entity;
 using ACE.Entity.Enum;
-using ACE.Server.Entity;
+using ACE.Entity.Models;
 using ACE.Server.Entity.Actions;
 using ACE.Server.Network.GameMessages.Messages;
 
@@ -33,6 +32,10 @@ namespace ACE.Server.WorldObjects
         {
             if (SpellDID != null)
                 Spell = new Server.Entity.Spell(SpellDID.Value, false);
+
+            if (Spell != null)
+                LongDesc = $"Inscribed spell: {Spell.Name}\n{Spell.Description}";
+            Use = "Use this item to attempt to learn its spell.";
         }
 
         /// <summary>
@@ -52,6 +55,14 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
+            if (player.IsBusy || player.Teleporting || player.suicideInProgress)
+            {
+                player.SendWeenieError(WeenieError.YoureTooBusy);
+                return;
+            }
+
+            player.IsBusy = true;
+
             var actionChain = new ActionChain();
 
             if (player.CombatMode != CombatMode.NonCombat)
@@ -63,9 +74,12 @@ namespace ACE.Server.WorldObjects
             }
 
             var animTime = player.EnqueueMotion(actionChain, MotionCommand.Reading);
+            player.LastUseTime += animTime;
 
-            actionChain.AddDelaySeconds(2.0f);
-            player.LastUseTime += 2.0f;
+            var readTime = 1.0f;
+
+            actionChain.AddDelaySeconds(readTime);
+            player.LastUseTime += readTime;
 
             actionChain.AddAction(player, () =>
             {
@@ -98,9 +112,15 @@ namespace ACE.Server.WorldObjects
                 player.Session.Network.EnqueueSend(new GameMessageSystemChat("The scroll is destroyed.", ChatMessageType.Broadcast));
             });
 
+
+            // FIXME: return stance time
+            player.EnqueueMotion(actionChain, MotionCommand.Ready);
+
             player.LastUseTime += animTime;     // return stance
 
-            player.EnqueueMotion(actionChain, MotionCommand.Ready);
+            actionChain.AddDelaySeconds(animTime);
+
+            actionChain.AddAction(player, () => player.IsBusy = false);
 
             actionChain.EnqueueChain();
         }

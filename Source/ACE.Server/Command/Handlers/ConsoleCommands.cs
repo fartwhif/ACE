@@ -10,6 +10,19 @@ namespace ACE.Server.Command.Handlers
 {
     public static class ConsoleCommands
     {
+        [CommandHandler("version", AccessLevel.Admin, CommandHandlerFlag.ConsoleInvoke, 0, "Show server version information.", "")]
+        public static void ShowVersion(Session session, params string[] parameters)
+        {
+            var msg = ServerBuildInfo.GetVersionInfo();
+            Console.WriteLine(msg);
+        }
+
+        [CommandHandler("exit", AccessLevel.Admin, CommandHandlerFlag.ConsoleInvoke, 0, "Shut down server immediately.", "")]
+        public static void Exit(Session session, params string[] parameters)
+        {
+            AdminShardCommands.ShutdownServerNow(session, parameters);
+        }
+
         [CommandHandler("cell-export", AccessLevel.Admin, CommandHandlerFlag.ConsoleInvoke, 1, "Export contents of CELL DAT file.", "<export-directory-without-spaces>")]
         public static void ExportCellDatContents(Session session, params string[] parameters)
         {
@@ -113,7 +126,7 @@ namespace ACE.Server.Command.Handlers
             }
 
             string exportDir = parameters[0];
-            if(exportDir.Length == 0 || !System.IO.Directory.Exists(exportDir))
+            if (exportDir.Length == 0 || !System.IO.Directory.Exists(exportDir))
             {
                 Console.WriteLine(syntax);
                 return;
@@ -125,7 +138,7 @@ namespace ACE.Server.Command.Handlers
                 if (parameters[1].StartsWith("0x"))
                 {
                     string hex = parameters[1].Substring(2);
-                    if(!uint.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.CurrentCulture, out imageId))
+                    if (!uint.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.CurrentCulture, out imageId))
                     {
                         Console.WriteLine(syntax);
                         return;

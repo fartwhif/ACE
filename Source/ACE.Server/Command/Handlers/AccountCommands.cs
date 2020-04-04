@@ -1,5 +1,5 @@
 using System;
-
+using System.Net;
 using ACE.Database;
 using ACE.Database.Models.Auth;
 using ACE.Entity.Enum;
@@ -49,7 +49,10 @@ namespace ACE.Server.Command.Handlers
             {
                 try
                 {
-                    var account = DatabaseManager.Authentication.CreateAccount(parameters[0].ToLower(), parameters[1], accessLevel);
+                    var account = DatabaseManager.Authentication.CreateAccount(parameters[0].ToLower(), parameters[1], accessLevel, IPAddress.Parse("127.0.0.1"));
+
+                    if (DatabaseManager.AutoPromoteNextAccountToAdmin && accessLevel == AccessLevel.Admin)
+                        DatabaseManager.AutoPromoteNextAccountToAdmin = false;
 
                     message = ("Account successfully created for " + account.AccountName + " (" + account.AccountId + ") with access rights as " + articleAorAN + " " + Enum.GetName(typeof(AccessLevel), accessLevel) + ".");
                 }
@@ -111,6 +114,9 @@ namespace ACE.Server.Command.Handlers
             }
 
             DatabaseManager.Authentication.UpdateAccountAccessLevel(accountId, accessLevel);
+
+            if (DatabaseManager.AutoPromoteNextAccountToAdmin && accessLevel == AccessLevel.Admin)
+                DatabaseManager.AutoPromoteNextAccountToAdmin = false;
 
             CommandHandlerHelper.WriteOutputInfo(session, "Account " + accountName + " updated with access rights set as " + articleAorAN + " " + Enum.GetName(typeof(AccessLevel), accessLevel) + ".", ChatMessageType.Broadcast);
         }

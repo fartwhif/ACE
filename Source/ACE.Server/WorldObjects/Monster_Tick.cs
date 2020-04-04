@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 
 using ACE.Entity.Enum;
 
@@ -6,7 +7,7 @@ namespace ACE.Server.WorldObjects
 {
     partial class Creature
     {
-        private const double monsterTickInterval = 0.2;
+        protected const double monsterTickInterval = 0.2;
 
         public double NextMonsterTickTime;
 
@@ -17,22 +18,29 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public void Monster_Tick(double currentUnixTime)
         {
+            if (IsChessPiece && this is GamePiece gamePiece)
+            {
+                // faster than vtable?
+                gamePiece.Tick(currentUnixTime);
+                return;
+            }
+
+            if (IsPassivePet && this is Pet pet)
+            {
+                pet.Tick(currentUnixTime);
+                return;
+            }
+
             NextMonsterTickTime = currentUnixTime + monsterTickInterval;
 
-            if (!IsAwake || IsDead) return;
+            if (!IsAwake && MonsterState == State.Return)
+                MonsterState = State.Idle;
 
-            IsMonster = true;
+            if (!IsAwake || IsDead) return;
 
             HandleFindTarget();
 
             CheckMissHome();    // tickrate?
-
-            var pet = this as CombatPet;
-            if (pet != null && DateTime.UtcNow >= pet.ExpirationTime)
-            {
-                Destroy();
-                return;
-            }
 
             if (AttackTarget == null && MonsterState != State.Return)
             {
@@ -46,10 +54,13 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
+            var combatPet = this as CombatPet;
+
             var creatureTarget = AttackTarget as Creature;
-            if (creatureTarget != null && (creatureTarget.IsDead || (pet == null && !creatureTarget.IsVisible(this))))
+
+            if (creatureTarget != null && (creatureTarget.IsDead || (combatPet == null && !IsVisibleTarget(creatureTarget))))
             {
-                Sleep();
+                FindNextTarget();
                 return;
             }
 
@@ -70,17 +81,13 @@ namespace ACE.Server.WorldObjects
 
             // select a new weapon if missile launcher is out of ammo
             var weapon = GetEquippedWeapon();
-            if (weapon != null && weapon.IsAmmoLauncher)
+            /*if (weapon != null && weapon.IsAmmoLauncher)
             {
                 var ammo = GetEquippedAmmo();
                 if (ammo == null)
-                {
-                    TryUnwieldObjectWithBroadcasting(weapon.Guid, out _, out _);
-                    EquipInventoryItems(true);
-                    DoAttackStance();
-                    CurrentAttack = null;
-                }
-            }
+                    SwitchToMeleeAttack();
+            }*/
+
             if (weapon == null && CurrentAttack != null && CurrentAttack == CombatType.Missile)
             {
                 EquipInventoryItems(true);
@@ -140,11 +147,20 @@ namespace ACE.Server.WorldObjects
                     if (AttackReady())
                         Attack();
                 }
+                else
+                {
+                    // monster switches to melee combat immediately,
+                    // if target is beyond max range?
+
+                    // should ranged mobs only get CurrentTargets within MaxRange?
+                    //Console.WriteLine($"{Name}.MissileAttack({AttackTarget.Name}): targetDist={targetDist}, MaxRange={MaxRange}, switching to melee");
+                    SwitchToMeleeAttack();
+                }
             }
 
             // pets drawing aggro
-            if (pet != null)
-                pet.PetCheckMonsters();
+            if (combatPet != null)
+                combatPet.PetCheckMonsters();
         }
     }
 }

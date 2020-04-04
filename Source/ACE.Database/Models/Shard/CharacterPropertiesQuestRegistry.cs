@@ -5,12 +5,11 @@ namespace ACE.Database.Models.Shard
 {
     public partial class CharacterPropertiesQuestRegistry
     {
-        public uint Id { get; set; }
         public uint CharacterId { get; set; }
         public string QuestName { get; set; }
         public uint LastTimeCompleted { get; set; }
         public int NumTimesCompleted { get; set; }
 
-        public Character Character { get; set; }
+        public virtual Character Character { get; set; }
     }
 }

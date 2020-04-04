@@ -1,9 +1,7 @@
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
+using System;
+
 using ACE.Entity;
-using ACE.Entity.Enum;
-using ACE.Entity.Enum.Properties;
-using System.IO;
+using ACE.Entity.Models;
 
 namespace ACE.Server.WorldObjects
 {
@@ -27,6 +25,22 @@ namespace ACE.Server.WorldObjects
 
         private void SetEphemeralValues()
         {
+            //StackSize = null;
+            //StackUnitEncumbrance = null;
+            //StackUnitValue = null;
+            //MaxStackSize = null;
+
+            // Linkable Item Generator (linkitemgen2minutes) fix
+            if (WeenieClassId == 4142)
+            {
+                MaxGeneratedObjects = 0;
+                InitGeneratedObjects = 0;
+            }
+        }
+
+        public override void ActOnUse(WorldObject wo)
+        {
+            // Do nothing
         }
     }
 }

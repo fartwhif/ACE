@@ -1,8 +1,8 @@
 using System;
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
+
 using ACE.Entity;
 using ACE.Entity.Enum;
+using ACE.Entity.Models;
 using ACE.Server.Network.GameMessages.Messages;
 
 namespace ACE.Server.WorldObjects
@@ -35,6 +35,8 @@ namespace ACE.Server.WorldObjects
 
         private void SetEphemeralValues()
         {
+            if (UseSound == 0)
+                UseSound = Sound.TriggerActivated;
         }
 
         public override void SetLinkProperties(WorldObject wo)
@@ -68,9 +70,14 @@ namespace ACE.Server.WorldObjects
 
             LastUseTime = currentTime;
 
-            player.EnqueueBroadcast(new GameMessageSound(player.Guid, (Sound)UseSound));
+            player.EnqueueBroadcast(new GameMessageSound(player.Guid, UseSound));
 
             base.OnActivate(activator);
+        }
+
+        public override void ActOnUse(WorldObject wo)
+        {
+            // Do nothing
         }
     }
 }

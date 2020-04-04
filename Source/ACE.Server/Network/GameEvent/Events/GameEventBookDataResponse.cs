@@ -1,11 +1,12 @@
 using System.Collections.Generic;
-using ACE.Entity;
+
+using ACE.Entity.Models;
 
 namespace ACE.Server.Network.GameEvent.Events
 {
     public class GameEventBookDataResponse : GameEventMessage
     {
-        public GameEventBookDataResponse(Session session, uint bookID, int maxChars, int maxPages, List<PageData> pageData, string inscription, uint authorId, string authorName, bool ignoreAuthor)
+        public GameEventBookDataResponse(Session session, uint bookID, int maxChars, int maxPages, List<PropertiesBookPageData> pageData, string inscription, uint authorId, string authorName, bool ignoreAuthor)
             : base(GameEventType.BookDataResponse, GameMessageGroup.UIQueue, session)
         {
             Writer.Write(bookID);
@@ -19,7 +20,7 @@ namespace ACE.Server.Network.GameEvent.Events
             Writer.Write(pageData.Count);
             for (int i = 0; i < pageData.Count; i++)
             {
-                Writer.Write(pageData[i].AuthorID);
+                Writer.Write(pageData[i].AuthorId);
                 Writer.WriteString16L(pageData[i].AuthorName);
                 // Check if player is admin and hide AuthorAccount if not. Potential security hole if we are sending out account usernames.
                 if (session.Player.IsAdmin || session.Player.IsSentinel || session.Player.IsArch || session.Player.IsPsr)
@@ -43,7 +44,10 @@ namespace ACE.Server.Network.GameEvent.Events
                 else
                 {
                     Writer.Write(0); // Text Included
-                    Writer.Write(0); // Ignore Author
+                    if (ignoreAuthor)
+                        Writer.Write(1); // Ignore Author
+                    else
+                        Writer.Write(0); // Ignore Author
                 }
             }
 

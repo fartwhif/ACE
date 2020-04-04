@@ -1,16 +1,15 @@
 using System;
-using System.Diagnostics;
 
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
-using ACE.DatLoader.Entity;
+using ACE.Common;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Entity.Models;
 using ACE.Server.Entity;
-using ACE.Server.Network;
-using ACE.Server.Network.Structure;
+using ACE.Server.Factories;
 using ACE.Server.Network.GameEvent.Events;
+using ACE.Server.Network.GameMessages.Messages;
+using ACE.Server.Physics;
 
 namespace ACE.Server.WorldObjects
 {
@@ -36,31 +35,6 @@ namespace ACE.Server.WorldObjects
         {
         }
 
-        public override ActivationResult CheckUseRequirements(WorldObject activator)
-        {
-            if (!(activator is Player player))
-                return new ActivationResult(false);
-
-            var baseRequirements = base.CheckUseRequirements(activator);
-            if (!baseRequirements.Success)
-                return baseRequirements;
-
-            // are cooldown timers specific to gems, or should they be in base?
-            if (!player.EnchantmentManager.CheckCooldown(CooldownId))
-            {
-                // TODO: werror/string not found, find exact message
-
-                /*var cooldown = player.GetCooldown(this);
-                var timer = cooldown.GetFriendlyString();
-                player.Session.Network.EnqueueSend(new GameMessageSystemChat($"{Name} can be activated again in {timer}", ChatMessageType.Broadcast));*/
-
-                player.Session.Network.EnqueueSend(new GameEventCommunicationTransientString(player.Session, "You have used this item too recently"));
-                return new ActivationResult(false);
-            }
-
-            return new ActivationResult(true);
-        }
-
         /// <summary>
         /// This is raised by Player.HandleActionUseItem.<para />
         /// The item should be in the players possession.
@@ -72,87 +46,226 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public override void ActOnUse(WorldObject activator)
         {
+            ActOnUse(activator, false);
+        }
+
+        public void ActOnUse(WorldObject activator, bool confirmed)
+        {
             if (!(activator is Player player))
                 return;
 
-            if (UseCreateContractId == null)
+            if (player.IsBusy || player.Teleporting || player.suicideInProgress)
             {
-                player.EnchantmentManager.StartCooldown(this);
-
-                if (SpellDID.HasValue)
-                {
-                    var spell = new Server.Entity.Spell((uint)SpellDID);
-
-                    TryCastSpell(spell, player, this);
-                }
-
-                if ((GetProperty(PropertyBool.UnlimitedUse) ?? false) == false)
-                    player.TryConsumeFromInventoryWithNetworking(this, 1);
+                player.SendWeenieError(WeenieError.YoureTooBusy);
+                return;
             }
-            else
-                ActOnUseContract(player);
-        }
 
-        public void ActOnUseContract(Player player)
-        {
-            ContractTracker contractTracker = new ContractTracker((uint)UseCreateContractId, player.Guid.Full)
+            if (player.FastTick && !player.PhysicsObj.TransientState.HasFlag(TransientStateFlags.OnWalkable))
             {
-                Stage = 0,
-                TimeWhenDone = 0,
-                TimeWhenRepeats = 0,
-                DeleteContract = 0,
-                SetAsDisplayContract = 1
-            };
+                player.SendWeenieError(WeenieError.YouCantDoThatWhileInTheAir);
+                return;
+            }
 
-            if (CooldownId != null && player.LastUseTracker.TryGetValue(CooldownId.Value, out var lastUse))
+            if (!string.IsNullOrWhiteSpace(UseSendsSignal))
             {
-                var timeRemaining = lastUse.AddSeconds(CooldownDuration ?? 0.00).Subtract(DateTime.Now);
-                if (timeRemaining.Seconds > 0)
+                player.CurrentLandblock?.EmitSignal(player, UseSendsSignal);
+                return;
+            }
+
+            // handle rare gems
+            if (RareId != null && player.GetCharacterOption(CharacterOption.ConfirmUseOfRareGems) && !confirmed)
+            {
+                var msg = $"Are you sure you want to use {Name}?";
+                var confirm = new Confirmation_Custom(player.Guid, () => ActOnUse(activator, true));
+                player.ConfirmationManager.EnqueueSend(confirm, msg);
+                return;
+            }
+
+            if (RareUsesTimer)
+            {
+                var currentTime = Time.GetUnixTime();
+
+                var timeElapsed = currentTime - player.LastRareUsedTimestamp;
+
+                if (timeElapsed < RareTimer)
                 {
-                    ChatPacket.SendServerMessage(player.Session, "You cannot use another contract for " + timeRemaining.Seconds + " seconds", ChatMessageType.Broadcast);
+                    // TODO: get retail message
+                    var remainTime = (int)Math.Ceiling(RareTimer - timeElapsed);
+                    player.Session.Network.EnqueueSend(new GameMessageSystemChat($"You may use another timed rare in {remainTime}s", ChatMessageType.Broadcast));
                     return;
                 }
             }
 
-            // We need to see if we are tracking this quest already.   Also, I cannot be used on world, so I must have a container id
-            if (!player.TrackedContracts.ContainsKey((uint)UseCreateContractId) && ContainerId != null)
+            if (UseUserAnimation != MotionCommand.Invalid)
             {
-                player.TrackedContracts.Add((uint)UseCreateContractId, contractTracker);
+                // some gems have UseUserAnimation and UseSound, similar to food
+                // eg. 7559 - Condensed Dispel Potion
 
-                // This will track our use for each contract using the shared cooldown server side.
-                if (CooldownId != null)
-                {
-                    // add or update.
-                    if (!player.LastUseTracker.ContainsKey(CooldownId.Value))
-                        player.LastUseTracker.Add(CooldownId.Value, DateTime.Now);
-                    else
-                        player.LastUseTracker[CooldownId.Value] = DateTime.Now;
-                }
+                // the animation is also weird, and differs from food, in that it is the full animation
+                // instead of stopping at the 'eat/drink' point... so we pass 0.5 here?
 
-                player.Session.Network.EnqueueSend(new GameEventSendClientContractTracker(player.Session, contractTracker));
-                ChatPacket.SendServerMessage(player.Session, "You just added " + contractTracker.ContractDetails.ContractName, ChatMessageType.Broadcast);
-
-                // TODO: Add sending the 02C2 message UpdateEnchantment.   They added a second use to this existing system
-                // so they could show the delay on the client side - it is not really an enchantment but the they overloaded the use. Og II
-                // Thanks Slushnas for letting me know about this as well as an awesome pcap that shows it all in action.
-
-                // TODO: there is a lot of work to do here.   I am stubbing this in for now to send the right message.   Lots of magic numbers at the moment.
-                Debug.Assert(CooldownId != null, "CooldownId != null");
-                Debug.Assert(CooldownDuration != null, "CooldownDuration != null");
-                //const ushort layer = 0x10000; // FIXME: we need to track how many layers of the exact same spell we have in effect.
-                const ushort layer = 1;
-                //const uint spellCategory = 0x8000; // FIXME: Not sure where we get this from
-                var spellBase = new SpellBase(0, CooldownDuration.Value, 0, -666);
-                // cooldown not being used in network packet?
-                var gem = new Enchantment(player, spellBase, layer, /*CooldownId.Value,*/ EnchantmentMask.Cooldown);
-                player.Session.Network.EnqueueSend(new GameEventMagicUpdateEnchantment(player.Session, gem));
-
-                // Ok this was not known to us, so we used the contract - now remove it from inventory.
-                // HandleActionRemoveItemFromInventory is has it's own action chain.
-                player.TryConsumeFromInventoryWithNetworking(this, 1);
+                player.ApplyConsumable(UseUserAnimation, () => UseGem(player), 0.5f);
             }
             else
-                ChatPacket.SendServerMessage(player.Session, "You already have this quest tracked: " + contractTracker.ContractDetails.ContractName, ChatMessageType.Broadcast);
+                UseGem(player);
+        }
+
+        public void UseGem(Player player)
+        {
+            if (player.IsDead) return;
+
+            if (RareUsesTimer)
+            {
+                var currentTime = Time.GetUnixTime();
+
+                player.LastRareUsedTimestamp = currentTime;
+
+                // local broadcast usage
+                player.EnqueueBroadcast(new GameMessageSystemChat($"{player.Name} used the rare item {Name}", ChatMessageType.Broadcast));
+            }
+
+            if (SpellDID.HasValue)
+            {
+                var spell = new Spell((uint)SpellDID);
+
+                TryCastSpell(spell, player, this, false);
+            }
+
+            if (UseCreateContractId > 0)
+            {
+                if (!player.ContractManager.Add(UseCreateContractId.Value))
+                    return;
+
+                // this wasn't in retail, but the lack of feedback when using a contract gem just seems jarring so...
+                player.Session.Network.EnqueueSend(new GameMessageSystemChat($"{Name} accepted. Click on the quill icon in the lower right corner to open your contract tab to view your active contracts.", ChatMessageType.Broadcast));
+            }
+
+            if (UseCreateItem > 0)
+            {
+                if (!HandleUseCreateItem(player))
+                    return;
+            }
+
+            if (UseSound > 0)
+                player.Session.Network.EnqueueSend(new GameMessageSound(player.Guid, UseSound));
+
+            if ((GetProperty(PropertyBool.UnlimitedUse) ?? false) == false)
+                player.TryConsumeFromInventoryWithNetworking(this, 1);
+        }
+
+        public bool HandleUseCreateItem(Player player)
+        {
+            var playerFreeInventorySlots = player.GetFreeInventorySlots();
+            var playerFreeContainerSlots = player.GetFreeContainerSlots();
+            var playerAvailableBurden = player.GetAvailableBurden();
+
+            var playerOutOfInventorySlots = false;
+            var playerOutOfContainerSlots = false;
+            var playerExceedsAvailableBurden = false;
+
+            var amount = UseCreateQuantity ?? 1;
+
+            var itemStacks = player.PreCheckItem(UseCreateItem.Value, amount, playerFreeContainerSlots, playerFreeInventorySlots, playerAvailableBurden, out var itemEncumberance, out bool itemRequiresBackpackSlot);
+
+            if (itemRequiresBackpackSlot)
+            {
+                playerFreeContainerSlots -= itemStacks;
+                playerAvailableBurden -= itemEncumberance;
+
+                playerOutOfContainerSlots = playerFreeContainerSlots < 0;
+            }
+            else
+            {
+                playerFreeInventorySlots -= itemStacks;
+                playerAvailableBurden -= itemEncumberance;
+
+                playerOutOfInventorySlots = playerFreeInventorySlots < 0;
+            }
+
+            playerExceedsAvailableBurden = playerAvailableBurden < 0;
+
+            if (playerOutOfInventorySlots || playerOutOfContainerSlots || playerExceedsAvailableBurden)
+            {
+                if (playerExceedsAvailableBurden)
+                    player.Session.Network.EnqueueSend(new GameEventCommunicationTransientString(player.Session, "You are too encumbered to use that!"));
+                else if (playerOutOfInventorySlots)
+                    player.Session.Network.EnqueueSend(new GameEventCommunicationTransientString(player.Session, "You do not have enough pack space to use that!"));
+                else //if (playerOutOfContainerSlots)
+                    player.Session.Network.EnqueueSend(new GameEventCommunicationTransientString(player.Session, "You do not have enough container slots to use that!"));
+
+                return false;
+            }
+
+            if (itemStacks > 0)
+            {
+                while (amount > 0)
+                {
+                    var item = WorldObjectFactory.CreateNewWorldObject(UseCreateItem.Value);
+
+                    if (item is Stackable)
+                    {
+                        // amount contains a max stack
+                        if (item.MaxStackSize <= amount)
+                        {
+                            item.SetStackSize(item.MaxStackSize);
+                            amount -= item.MaxStackSize.Value;
+                        }
+                        else // not a full stack
+                        {
+                            item.SetStackSize(amount);
+                            amount -= amount;
+                        }
+                    }
+                    else
+                        amount -= 1;
+
+                    player.TryCreateInInventoryWithNetworking(item);
+                }
+            }
+            else
+            {
+                player.Session.Network.EnqueueSend(new GameEventCommunicationTransientString(player.Session, $"Unable to use {Name} at this time!"));
+                return false;
+            }
+            return true;
+        }
+
+        public int? RareId
+        {
+            get => GetProperty(PropertyInt.RareId);
+            set { if (!value.HasValue) RemoveProperty(PropertyInt.RareId); else SetProperty(PropertyInt.RareId, value.Value); }
+        }
+
+        public bool RareUsesTimer
+        {
+            get => GetProperty(PropertyBool.RareUsesTimer) ?? false;
+            set { if (!value) RemoveProperty(PropertyBool.RareUsesTimer); else SetProperty(PropertyBool.RareUsesTimer, value); }
+        }
+
+        public override void HandleActionUseOnTarget(Player player, WorldObject target)
+        {
+            // should tailoring kit / aetheria be subtyped?
+            if (Tailoring.IsTailoringKit(WeenieClassId))
+            {
+                Tailoring.UseObjectOnTarget(player, this, target);
+                return;
+            }
+
+            // fallback on recipe manager?
+            base.HandleActionUseOnTarget(player, target);
+        }
+
+        /// <summary>
+        /// For Rares that use cooldown timers (RareUsesTimer),
+        /// any other rares with RareUsesTimer may not be used for 3 minutes
+        /// Note that if the player logs out, this cooldown timer continues to tick/expire (unlike enchantments)
+        /// </summary>
+        public static int RareTimer = 180;
+
+        public string UseSendsSignal
+        {
+            get => GetProperty(PropertyString.UseSendsSignal);
+            set { if (value == null) RemoveProperty(PropertyString.UseSendsSignal); else SetProperty(PropertyString.UseSendsSignal, value); }
         }
     }
 }

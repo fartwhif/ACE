@@ -1,12 +1,16 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using ACE.Database.Models.Shard;
+
+using ACE.Common;
+using ACE.Database;
 using ACE.DatLoader;
 using ACE.DatLoader.FileTypes;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
 using ACE.Server.Entity;
+using ACE.Entity.Models;
+using ACE.Server.Managers;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
 
@@ -48,11 +52,6 @@ namespace ACE.Server.WorldObjects
         public bool IsDead => Health.Current <= 0;
 
         /// <summary>
-        /// The list of combat maneuvers performable by this monster
-        /// </summary>
-        public CombatManeuverTable CombatTable;
-
-        /// <summary>
         /// A list of possible attack heights for this monster,
         /// as determined by the combat maneuvers table
         /// </summary>
@@ -65,7 +64,7 @@ namespace ACE.Server.WorldObjects
                 if (CombatTable == null) return null;
 
                 if (_attackHeights == null)
-                    _attackHeights = CombatTable.CMT.Select(m => (AttackHeight)m.AttackHeight).Distinct().ToList();
+                    _attackHeights = CombatTable.CMT.Select(m => m.AttackHeight).Distinct().ToList();
 
                 return _attackHeights;
             }
@@ -89,7 +88,8 @@ namespace ACE.Server.WorldObjects
                 return CombatType.Missile;
 
             // if caster, roll for spellcasting chance
-            if (!IsCaster || !RollCastMagic())
+            //if (!IsCaster || !RollCastMagic())
+            if (!IsCaster || TryRollSpell() == null)
                 return CombatType.Melee;
             else
                 return CombatType.Magic;
@@ -136,10 +136,13 @@ namespace ACE.Server.WorldObjects
 
         public float GetMaxRange()
         {
+            // FIXME
+            var it = 0;
+
             while (CurrentAttack == CombatType.Magic)
             {
                 // select a magic spell
-                CurrentSpell = GetRandomSpell();
+                //CurrentSpell = GetRandomSpell();
                 var currentSpell = GetCurrentSpell();
 
                 if (currentSpell.IsProjectile)
@@ -149,9 +152,13 @@ namespace ACE.Server.WorldObjects
                     {
                         // reroll attack type
                         CurrentAttack = GetNextAttackType();
-                        continue;
+                        it++;
 
                         // max iterations to melee?
+                        if (it >= 30)
+                            CurrentAttack = CombatType.Melee;
+
+                        continue;
                     }
                 }
                 return GetSpellMaxRange();
@@ -176,6 +183,7 @@ namespace ACE.Server.WorldObjects
                 return false;
 
             PhysicsObj.update_object();
+            UpdatePosition_SyncLocation();
 
             return !PhysicsObj.IsAnimating;
         }
@@ -190,6 +198,7 @@ namespace ACE.Server.WorldObjects
                 return false;
 
             PhysicsObj.update_object();
+            UpdatePosition_SyncLocation();
 
             return !PhysicsObj.IsAnimating;
         }
@@ -233,14 +242,21 @@ namespace ACE.Server.WorldObjects
             MaxRange = 0.0f;
         }
 
-        public DamageType GetDamageType(BiotaPropertiesBodyPart attackPart)
+        public DamageType GetDamageType(PropertiesBodyPart attackPart, CombatType? combatType = null)
         {
             var weapon = GetEquippedWeapon();
 
             if (weapon != null)
-                return GetDamageType();
+                return GetDamageType(false, combatType);
             else
-                return (DamageType)attackPart.DType;
+            {
+                var damageType = attackPart.DType;
+
+                if (damageType.IsMultiDamage())
+                    damageType = damageType.SelectDamageType();
+
+                return damageType;
+            }
         }
 
         /// <summary>
@@ -255,7 +271,7 @@ namespace ACE.Server.WorldObjects
             // splatter effects
             var hitSound = new GameMessageSound(Guid, Sound.HitFlesh1, 0.5f);
             //var splatter = (PlayScript)Enum.Parse(typeof(PlayScript), "Splatter" + playerSource.GetSplatterHeight() + playerSource.GetSplatterDir(this));
-            var splatter = new GameMessageScript(Guid, damageType == DamageType.Nether ? ACE.Entity.Enum.PlayScript.HealthDownVoid : ACE.Entity.Enum.PlayScript.DirtyFightingDamageOverTime);
+            var splatter = new GameMessageScript(Guid, damageType == DamageType.Nether ? PlayScript.HealthDownVoid : PlayScript.DirtyFightingDamageOverTime);
             EnqueueBroadcast(hitSound, splatter);
 
             if (Health.Current <= 0) return;
@@ -272,24 +288,27 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public void TakeDamageOverTime_NotifySource(Player source, DamageType damageType, float amount)
         {
-            var iAmount = (uint)Math.Round(amount);
-
-            // damage text notification
-            GameMessageSystemChat text = null;
-
-            if (damageType == DamageType.Nether)
+            if (PropertyManager.GetBool("show_dot_messages").Item)
             {
-                string verb = null, plural = null;
-                var percent = amount / Health.MaxValue;
-                Strings.GetAttackVerb(damageType, percent, ref verb, ref plural);
-                text = new GameMessageSystemChat($"You {verb} {Name} for {iAmount} points of periodic nether damage!", ChatMessageType.Magic);
+                var iAmount = (uint)Math.Round(amount);
+
+                // damage text notification
+                string msg = null;
+                var type = ChatMessageType.CombatSelf;
+
+                if (damageType == DamageType.Nether)
+                {
+                    string verb = null, plural = null;
+                    var percent = amount / Health.MaxValue;
+                    Strings.GetAttackVerb(damageType, percent, ref verb, ref plural);
+                    msg = $"You {verb} {Name} for {iAmount} points of periodic nether damage!";
+                    type = ChatMessageType.Magic;
+                }
+                else
+                    msg = $"You bleed {Name} for {iAmount} points of periodic damage!";
+
+                source.SendMessage(msg, type);
             }
-            else
-                text = new GameMessageSystemChat($"You bleed {Name} for {iAmount} points of periodic damage!", ChatMessageType.CombatSelf);
-
-            var updateHealth = new GameEventUpdateHealth(source.Session, Guid.Full, (float)Health.Current / Health.MaxValue);
-
-            source.Session.Network.EnqueueSend(text, updateHealth);
         }
 
         /// <summary>
@@ -297,7 +316,7 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         /// <param name="source">The attacker / source of damage</param>
         /// <param name="amount">The amount of damage rounded</param>
-        public virtual void TakeDamage(WorldObject source, DamageType damageType, float amount, bool crit = false)
+        public virtual uint TakeDamage(WorldObject source, DamageType damageType, float amount, bool crit = false)
         {
             var tryDamage = (uint)Math.Round(amount);
             var damage = (uint)-UpdateVitalDelta(Health, (int)-tryDamage);
@@ -314,6 +333,7 @@ namespace ACE.Server.WorldObjects
 
                 Die();
             }
+            return damage;
         }
 
         public void EmitSplatter(Creature target, float damage)
@@ -328,6 +348,26 @@ namespace ACE.Server.WorldObjects
             }
             var splatter = (PlayScript)Enum.Parse(typeof(PlayScript), "Splatter" + GetSplatterHeight() + GetSplatterDir(target));
             target.EnqueueBroadcast(new GameMessageScript(target.Guid, splatter));
+        }
+
+        public CombatStyle AiAllowedCombatStyle
+        {
+            get => (CombatStyle)(GetProperty(PropertyInt.AiAllowedCombatStyle) ?? 0);
+            set { if (value == 0) RemoveProperty(PropertyInt.AiAllowedCombatStyle); else SetProperty(PropertyInt.AiAllowedCombatStyle, (int)value); }
+        }
+
+        private static readonly Dictionary<uint, BodyPartTable> BPTableCache = new Dictionary<uint, BodyPartTable>();
+
+        public static BodyPartTable GetBodyParts(uint wcid)
+        {
+            if (!BPTableCache.TryGetValue(wcid, out var bpTable))
+            {
+                var weenie = DatabaseManager.World.GetCachedWeenie(wcid);
+
+                bpTable = new BodyPartTable(weenie);
+                BPTableCache[wcid] = bpTable;
+            }
+            return bpTable;
         }
     }
 }

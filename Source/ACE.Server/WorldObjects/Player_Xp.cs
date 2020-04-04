@@ -17,30 +17,60 @@ namespace ACE.Server.WorldObjects
         /// A player earns XP through natural progression, ie. kills and quests completed
         /// </summary>
         /// <param name="amount">The amount of XP being added</param>
-        /// <param name="sharable">True if this XP can be shared with Fellowship</param>
-        /// <param name="fixedAmount">For fellowships, is the XP bonus applied?</param>
-        public void EarnXP(long amount, bool sharable = true, bool fixedAmount = false)
+        /// <param name="xpType">The source of XP being added</param>
+        /// <param name="shareable">True if this XP can be shared with Fellowship</param>
+        public void EarnXP(long amount, XpType xpType, ShareType shareType = ShareType.All)
         {
             //Console.WriteLine($"{Name}.EarnXP({amount}, {sharable}, {fixedAmount})");
 
             // apply xp modifier
             var modifier = PropertyManager.GetDouble("xp_modifier").Item;
-            var m_amount = (long)(amount * modifier);
+            var enchantment = EnchantmentManager.GetXPMod();
+
+            var m_amount = (long)Math.Round(amount * enchantment * modifier);
 
             if (m_amount < 0)
             {
-                log.Warn($"{Name}.EarnXP({amount}, {sharable}, {fixedAmount})");
-                log.Warn($"Modifier: {modifier}, m_amount: {m_amount}");
+                log.Warn($"{Name}.EarnXP({amount}, {shareType})");
+                log.Warn($"modifier: {modifier}, enchantment: {enchantment}, m_amount: {m_amount}");
                 return;
             }
 
-            GrantXP(m_amount, sharable, fixedAmount, false);
+            GrantXP(m_amount, xpType, shareType);
+        }
+
+        /// <summary>
+        /// Directly grants XP to the player, without the XP modifier
+        /// </summary>
+        /// <param name="amount">The amount of XP to grant to the player</param>
+        /// <param name="xpType">The source of the XP being granted</param>
+        /// <param name="shareable">If TRUE, this XP can be shared with fellowship members</param>
+        public void GrantXP(long amount, XpType xpType, ShareType shareType = ShareType.All)
+        {
+            if (Fellowship != null && Fellowship.ShareXP && shareType.HasFlag(ShareType.Fellowship))
+            {
+                // this will divy up the XP, and re-call this function
+                // with ShareType.Fellowship removed
+                Fellowship.SplitXp((ulong)amount, xpType, shareType, this);
+                return;
+            }
+
+            UpdateXpAndLevel(amount, xpType);
+
+            // for passing XP up the allegiance chain,
+            // this function is only called at the very beginning, to start the process.
+            if (shareType.HasFlag(ShareType.Allegiance))
+                UpdateXpAllegiance(amount);
+
+            // only certain types of XP are granted to items
+            if (xpType == XpType.Kill || xpType == XpType.Quest)
+                GrantItemXP(amount);
         }
 
         /// <summary>
         /// Adds XP to a player's total XP, handles triggers (vitae, level up)
         /// </summary>
-        private void UpdateXpAndLevel(long amount)
+        private void UpdateXpAndLevel(long amount, XpType xpType)
         {
             // until we are max level we must make sure that we send
             var xpTable = DatManager.PortalDat.XpTable;
@@ -50,12 +80,14 @@ namespace ACE.Server.WorldObjects
 
             if (Level != maxLevel)
             {
+                var addAmount = amount;
+
                 var amountLeftToEnd = (long)maxLevelXp - TotalExperience ?? 0;
                 if (amount > amountLeftToEnd)
-                    amount = amountLeftToEnd;
+                    addAmount = amountLeftToEnd;
 
-                AvailableExperience += amount;
-                TotalExperience += amount;
+                AvailableExperience += addAmount;
+                TotalExperience += addAmount;
 
                 var xpTotalUpdate = new GameMessagePrivateUpdatePropertyInt64(this, PropertyInt64.TotalExperience, TotalExperience ?? 0);
                 var xpAvailUpdate = new GameMessagePrivateUpdatePropertyInt64(this, PropertyInt64.AvailableExperience, AvailableExperience ?? 0);
@@ -64,7 +96,10 @@ namespace ACE.Server.WorldObjects
                 CheckForLevelup();
             }
 
-            if (HasVitae)
+            if (xpType == XpType.Quest)
+                Session.Network.EnqueueSend(new GameMessageSystemChat($"You've earned {amount:N0} experience.", ChatMessageType.Broadcast));
+
+            if (HasVitae && xpType != XpType.Allegiance)
                 UpdateXpVitae(amount);
         }
 
@@ -107,7 +142,7 @@ namespace ACE.Server.WorldObjects
                 EnchantmentManager.SendUpdateVitae();
             }
 
-            if (vitaePenalty.EpsilonEquals(1.0f))
+            if (vitaePenalty.EpsilonEquals(1.0f) || vitaePenalty > 1.0f)
             {
                 var actionChain = new ActionChain();
                 actionChain.AddDelaySeconds(2.0f);
@@ -117,7 +152,7 @@ namespace ACE.Server.WorldObjects
                     if (vitae != null)
                     {
                         var curPenalty = vitae.StatModValue;
-                        if (curPenalty.EpsilonEquals(1.0f))
+                        if (curPenalty.EpsilonEquals(1.0f) || curPenalty > 1.0f)
                             EnchantmentManager.RemoveVitae();
                     }
                 });
@@ -128,10 +163,28 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Returns the maximum possible character level
         /// </summary>
-        /// <returns></returns>
-        public uint GetMaxLevel()
+        public static uint GetMaxLevel()
         {
             return (uint)DatManager.PortalDat.XpTable.CharacterLevelXPList.Count - 1;
+        }
+
+        /// <summary>
+        /// Returns TRUE if player >= MaxLevel
+        /// </summary>
+        public bool IsMaxLevel => Level >= GetMaxLevel();
+
+        /// <summary>
+        /// Returns the remaining XP required to reach a level
+        /// </summary>
+        public long? GetRemainingXP(uint level)
+        {
+            var maxLevel = GetMaxLevel();
+            if (level < 1 || level > maxLevel)
+                return null;
+
+            var levelTotalXP = DatManager.PortalDat.XpTable.CharacterLevelXPList[(int)level];
+
+            return (long)levelTotalXP - TotalExperience.Value;
         }
 
         /// <summary>
@@ -143,30 +196,55 @@ namespace ACE.Server.WorldObjects
             if (Level >= maxLevel)
                 return 0;
 
-            var nextLevelTotalXP = DatManager.PortalDat.XpTable.CharacterLevelXPList[Level.Value + 2];
+            var nextLevelTotalXP = DatManager.PortalDat.XpTable.CharacterLevelXPList[Level.Value + 1];
             return nextLevelTotalXP - (ulong)TotalExperience.Value;
         }
 
         /// <summary>
         /// Returns the total XP required to reach a level
         /// </summary>
-        public ulong GetTotalXP(int level)
+        public static ulong GetTotalXP(int level)
         {
             var maxLevel = GetMaxLevel();
-            if (level >= maxLevel)
+            if (level < 0 || level > maxLevel)
                 return 0;
 
-            return DatManager.PortalDat.XpTable.CharacterLevelXPList[level + 1];
+            return DatManager.PortalDat.XpTable.CharacterLevelXPList[level];
         }
+
+        /// <summary>
+        /// Returns the total amount of XP required for a player reach max level
+        /// </summary>
+        public static long MaxLevelXP
+        {
+            get
+            {
+                var xpTable = DatManager.PortalDat.XpTable.CharacterLevelXPList;
+
+                return (long)xpTable[xpTable.Count - 1];
+            }
+        }
+
         /// <summary>
         /// Returns the XP required to go from level A to level B
         /// </summary>
         public ulong GetXPBetweenLevels(int levelA, int levelB)
         {
-            var levelA_totalXP = DatManager.PortalDat.XpTable.CharacterLevelXPList[levelA + 1];
-            var levelB_totalXP = DatManager.PortalDat.XpTable.CharacterLevelXPList[levelB + 1];
+            // special case for max level
+            var maxLevel = (int)GetMaxLevel();
+
+            levelA = Math.Clamp(levelA, 1, maxLevel - 1);
+            levelB = Math.Clamp(levelB, 1, maxLevel);
+
+            var levelA_totalXP = DatManager.PortalDat.XpTable.CharacterLevelXPList[levelA];
+            var levelB_totalXP = DatManager.PortalDat.XpTable.CharacterLevelXPList[levelB];
 
             return levelB_totalXP - levelA_totalXP;
+        }
+
+        public ulong GetXPToNextLevel(int level)
+        {
+            return GetXPBetweenLevels(level, level + 1);
         }
 
         /// <summary>
@@ -199,7 +277,7 @@ namespace ACE.Server.WorldObjects
                 // break if we reach max
                 if (Level == maxLevel)
                 {
-                    PlayParticleEffect(ACE.Entity.Enum.PlayScript.WeddingBliss, Guid);
+                    PlayParticleEffect(PlayScript.WeddingBliss, Guid);
                     break;
                 }
             }
@@ -229,14 +307,17 @@ namespace ACE.Server.WorldObjects
                 }
 
                 if (Fellowship != null)
-                    Fellowship.OnFellowLevelUp();
+                    Fellowship.OnFellowLevelUp(this);
+
+                if (AllegianceNode != null)
+                    AllegianceNode.OnLevelUp();
 
                 Session.Network.EnqueueSend(levelUp);
 
                 SetMaxVitals();
 
                 // play level up effect
-                PlayParticleEffect(ACE.Entity.Enum.PlayScript.LevelUp, Guid);
+                PlayParticleEffect(PlayScript.LevelUp, Guid);
 
                 Session.Network.EnqueueSend(new GameMessageSystemChat(message, ChatMessageType.Advancement), currentCredits);
             }
@@ -245,42 +326,40 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Spends the amount of XP specified, deducting it from available experience
         /// </summary>
-        public bool SpendXP(long amount, bool sendNetworkPropertyUpdate = true)
+        public bool SpendXP(long amount, bool sendNetworkUpdate = true)
         {
-            if (AvailableExperience >= amount)
-            {
-                AvailableExperience -= amount;
+            if (amount > AvailableExperience)
+                return false;
 
-                if (sendNetworkPropertyUpdate)
-                {
-                    var xpUpdate = new GameMessagePrivateUpdatePropertyInt64(this, PropertyInt64.AvailableExperience, AvailableExperience ?? 0);
-                    Session.Network.EnqueueSend(xpUpdate);
-                }
+            AvailableExperience -= amount;
 
-                return true;
-            }
+            if (sendNetworkUpdate)
+                Session.Network.EnqueueSend(new GameMessagePrivateUpdatePropertyInt64(this, PropertyInt64.AvailableExperience, AvailableExperience ?? 0));
 
-            return false;
+            return true;
         }
 
         /// <summary>
         /// Tries to spend all of the players Xp into Attributes, Vitals and Skills
         /// </summary>
-        public void SpendAllXp(bool sendNetworkPropertyUpdate = true)
+        public void SpendAllXp(bool sendNetworkUpdate = true)
         {
-            SpendAllAvailableAttributeXp(Strength, sendNetworkPropertyUpdate);
-            SpendAllAvailableAttributeXp(Endurance, sendNetworkPropertyUpdate);
-            SpendAllAvailableAttributeXp(Coordination, sendNetworkPropertyUpdate);
-            SpendAllAvailableAttributeXp(Quickness, sendNetworkPropertyUpdate);
-            SpendAllAvailableAttributeXp(Focus, sendNetworkPropertyUpdate);
-            SpendAllAvailableAttributeXp(Self, sendNetworkPropertyUpdate);
+            SpendAllAvailableAttributeXp(Strength, sendNetworkUpdate);
+            SpendAllAvailableAttributeXp(Endurance, sendNetworkUpdate);
+            SpendAllAvailableAttributeXp(Coordination, sendNetworkUpdate);
+            SpendAllAvailableAttributeXp(Quickness, sendNetworkUpdate);
+            SpendAllAvailableAttributeXp(Focus, sendNetworkUpdate);
+            SpendAllAvailableAttributeXp(Self, sendNetworkUpdate);
 
-            SpendAllAvailableVitalXp(Health, sendNetworkPropertyUpdate);
-            SpendAllAvailableVitalXp(Stamina, sendNetworkPropertyUpdate);
-            SpendAllAvailableVitalXp(Mana, sendNetworkPropertyUpdate);
+            SpendAllAvailableVitalXp(Health, sendNetworkUpdate);
+            SpendAllAvailableVitalXp(Stamina, sendNetworkUpdate);
+            SpendAllAvailableVitalXp(Mana, sendNetworkUpdate);
 
             foreach (var skill in Skills)
-                SpendAllAvailableSkillXp(skill.Value, sendNetworkPropertyUpdate);
+            {
+                if (skill.Value.AdvancementClass >= SkillAdvancementClass.Trained)
+                    SpendAllAvailableSkillXp(skill.Value, sendNetworkUpdate);
+            }
         }
 
         /// <summary>
@@ -294,6 +373,35 @@ namespace ACE.Server.WorldObjects
             Session.Network.EnqueueSend(xpUpdate);
         }
 
+        public void HandleMissingXp()
+        {
+            var verifyXp = GetProperty(PropertyInt64.VerifyXp) ?? 0;
+            if (verifyXp == 0) return;
+
+            var actionChain = new ActionChain();
+            actionChain.AddDelaySeconds(5.0f);
+            actionChain.AddAction(this, () =>
+            {
+                var xpType = verifyXp > 0 ? "unassigned experience" : "experience points";
+
+                var msg = $"This character was missing some {xpType} --\nYou have gained an additional {Math.Abs(verifyXp).ToString("N0")} {xpType}!";
+
+                Session.Network.EnqueueSend(new GameMessageSystemChat(msg, ChatMessageType.Broadcast));
+
+                if (verifyXp < 0)
+                {
+                    // add to character's total XP
+                    TotalExperience -= verifyXp;
+
+                    CheckForLevelup();
+                }
+
+                RemoveProperty(PropertyInt64.VerifyXp);
+            });
+
+            actionChain.EnqueueChain();
+        }
+
         /// <summary>
         /// Returns the total amount of XP required to go from vitae to vitae + 0.01
         /// </summary>
@@ -305,58 +413,60 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
-        /// Directly raises the available XP by a specified amount
-        /// For debugging purposes only. Normal XP progression should use EarnXP above.
-        /// </summary>
-        /// <param name="amount">The amount of XP to grant to the player</param>
-        /// <param name="passup">If TRUE, additional XP is passed up the allegiance chain</param>
-        public void GrantXP(long amount, bool sharable = true, bool fixedAmount = false, bool message = true)
-        {
-            if (sharable)
-            {
-                if (Fellowship != null && Fellowship.ShareXP && Fellowship.SharableMembers.Contains(this))
-                    Fellowship.SplitXp((ulong)amount, fixedAmount);
-                else
-                    UpdateXpAndLevel(amount);
-
-                UpdateXpAllegiance(amount);
-            }
-            else
-                UpdateXpAndLevel(amount);
-
-            if (message)
-                Session.Network.EnqueueSend(new GameMessageSystemChat($"{amount:N0} experience granted.", ChatMessageType.Advancement));
-        }
-
-        /// <summary>
         /// Raise the available XP by a percentage of the current level XP or a maximum
         /// </summary>
-        public void GrantLevelProportionalXp(double percent, ulong max)
+        public void GrantLevelProportionalXp(double percent, long min, long max, bool shareable = false)
         {
-            var maxLevel = GetMaxLevel();
-            if (Level >= maxLevel) return;
-
             var nextLevelXP = GetXPBetweenLevels(Level.Value, Level.Value + 1);
-            var scaledXP = (long)Math.Min(nextLevelXP * percent, max);
-            GrantXP(scaledXP);
+
+            var scaledXP = (long)Math.Round(nextLevelXP * percent);
+
+            if (max > 0)
+                scaledXP = Math.Min(scaledXP, max);
+
+            if (min > 0)
+                scaledXP = Math.Max(scaledXP, min);
+
+            var shareType = shareable ? ShareType.All : ShareType.None;
+
+            GrantXP(scaledXP, XpType.Quest, shareType);
         }
 
         /// <summary>
-        /// Raise the available luminance by a specified amount
+        /// The player earns XP for items that can be leveled up
+        /// by killing creatures and completing quests,
+        /// while those items are equipped.
         /// </summary>
-        public void GrantLuminance(long amount)
+        public void GrantItemXP(long amount)
         {
-            // apply lum modifier
-            amount = (long)(amount * PropertyManager.GetDouble("luminance_modifier").Item);
+            foreach (var item in EquippedObjects.Values.Where(i => i.HasItemLevel))
+                GrantItemXP(item, amount);
+        }
 
-            if (AvailableLuminance + amount > MaximumLuminance)
-                amount = MaximumLuminance.Value - AvailableLuminance.Value;
+        public void GrantItemXP(WorldObject item, long amount)
+        {
+            var prevItemLevel = item.ItemLevel.Value;
+            var addItemXP = item.AddItemXP(amount);
 
-            AvailableLuminance += amount;
+            if (addItemXP > 0)
+                Session.Network.EnqueueSend(new GameMessagePrivateUpdatePropertyInt64(item, PropertyInt64.ItemTotalXp, item.ItemTotalXp.Value));
 
-            var luminance = new GameMessagePrivateUpdatePropertyInt64(this, PropertyInt64.AvailableLuminance, AvailableLuminance ?? 0);
-            var message = new GameMessageSystemChat($"{amount:N0} luminance granted.", ChatMessageType.Advancement);
-            Session.Network.EnqueueSend(luminance, message);
+            // handle item leveling up
+            var newItemLevel = item.ItemLevel.Value;
+            if (newItemLevel > prevItemLevel)
+            {
+                OnItemLevelUp(item, prevItemLevel);
+
+                var actionChain = new ActionChain();
+                actionChain.AddAction(this, () =>
+                {
+                    var msg = $"Your {item.Name} has increased in power to level {newItemLevel}!";
+                    Session.Network.EnqueueSend(new GameMessageSystemChat(msg, ChatMessageType.Broadcast));
+
+                    EnqueueBroadcast(new GameMessageScript(Guid, PlayScript.AetheriaLevelUp));
+                });
+                actionChain.EnqueueChain();
+            }
         }
     }
 }

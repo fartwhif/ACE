@@ -5,6 +5,8 @@ using log4net;
 
 using ACE.Common;
 using ACE.Database;
+using ACE.Entity.Enum;
+using ACE.Server.Network.GameMessages.Messages;
 
 namespace ACE.Server.Managers
 {
@@ -31,6 +33,8 @@ namespace ACE.Server.Managers
         /// The amount of seconds that the server will wait before unloading the application.
         /// </summary>
         public static uint ShutdownInterval { get; private set; }
+
+        public static DateTime ShutdownTime { get; private set; } = DateTime.MinValue;
 
         /// <summary>
         /// Sets the Shutdown Interval in Seconds
@@ -67,6 +71,15 @@ namespace ACE.Server.Managers
         public static void CancelShutdown()
         {
             ShutdownInitiated = false;
+            ShutdownTime = DateTime.MinValue;
+        }
+
+        public static void DoShutdownNow()
+        {
+            SetShutdownInterval(0);
+            ShutdownInitiated = true;
+            PlayerManager.BroadcastToAll(new GameMessageSystemChat("Broadcast from System> ATTENTION - This Asheron's Call Server is shutting down NOW!!!!", ChatMessageType.WorldBroadcast));
+            ShutdownServer();
         }
 
         /// <summary>
@@ -75,6 +88,10 @@ namespace ACE.Server.Managers
         private static void ShutdownServer()
         {
             var shutdownTime = DateTime.UtcNow.AddSeconds(ShutdownInterval);
+
+            ShutdownTime = shutdownTime;
+
+            var lastNoticeTime = DateTime.UtcNow;
 
             // wait for shutdown interval to expire
             while (shutdownTime != DateTime.MinValue && shutdownTime >= DateTime.UtcNow)
@@ -94,6 +111,8 @@ namespace ACE.Server.Managers
                     return;
                 }
 
+                lastNoticeTime = NotifyPlayersOfPendingShutdown(lastNoticeTime, shutdownTime.AddSeconds(1));
+
                 Thread.Sleep(10);
             }
 
@@ -104,12 +123,12 @@ namespace ACE.Server.Managers
 
             // logout each player
             foreach (var player in PlayerManager.GetAllOnline())
-                player.Session.LogOffPlayer();
+                player.Session.LogOffPlayer(true);
 
             log.Info("Waiting for all players to log off...");
 
             // wait 10 seconds for log-off
-            while (PlayerManager.GetAllOnline().Count > 0)
+            while (PlayerManager.GetOnlineCount() > 0)
                 Thread.Sleep(10);
 
             log.Debug("Adding all landblocks to destruction queue...");
@@ -120,7 +139,7 @@ namespace ACE.Server.Managers
 
             log.Info("Waiting for all active landblocks to unload...");
 
-            while (LandblockManager.GetActiveLandblocks().Count > 0)
+            while (LandblockManager.GetLoadedLandblocks().Count > 0)
                 Thread.Sleep(10);
 
             log.Debug("Stopping world...");
@@ -148,6 +167,52 @@ namespace ACE.Server.Managers
 
             // System exit
             Environment.Exit(Environment.ExitCode);
+        }
+
+        private static DateTime NotifyPlayersOfPendingShutdown(DateTime lastNoticeTime, DateTime shutdownTime)
+        {
+            var notify = false;
+
+            var sdt = shutdownTime - DateTime.UtcNow;
+                var timeHrs = $"{(sdt.Hours >= 1 ? $"{sdt.ToString("%h")}" : "")}{(sdt.Hours >= 2 ? $" hours" : sdt.Hours == 1 ? " hour" : "")}";
+                var timeMins = $"{(sdt.Minutes != 0 ? $"{sdt.ToString("%m")}" : "")}{(sdt.Minutes >= 2 ? $" minutes" : sdt.Minutes == 1 ? " minute" : "")}";
+                var timeSecs = $"{(sdt.Seconds != 0 ? $"{sdt.ToString("%s")}" : "")}{(sdt.Seconds >= 2 ? $" seconds" : sdt.Seconds == 1 ? " second" : "")}";
+                var time = $"{(timeHrs != "" ? timeHrs : "")}{(timeMins != "" ? $"{((timeHrs != "") ? ", " : "")}" + timeMins : "")}{(timeSecs != "" ? $"{((timeHrs != "" || timeMins != "") ? " and " : "")}" + timeSecs : "")}";
+
+            switch (time)
+            {
+                case "2 hours":
+                case "1 hour":
+                case "45 minutes":
+                case "30 minutes":
+                case "15 minutes":
+                case "10 minutes":
+                case "5 minutes":
+                case "2 minutes":
+                case "1 minute and 30 seconds":
+                case "1 minute":
+                case "30 seconds":
+                case "15 seconds":
+                case "10 seconds":
+                case "5 seconds":
+                    notify = true;
+                    break;
+            }
+
+            // Console.WriteLine(time);
+
+            if (notify && (DateTime.UtcNow - lastNoticeTime).TotalSeconds > 2)
+            {
+                foreach (var player in PlayerManager.GetAllOnline())
+                    if (sdt.TotalSeconds > 10)
+                        player.Session.WorldBroadcast($"Broadcast from System> {(sdt.TotalMinutes > 1.5 ? "ATTENTION" : "WARNING")} - This Asheron's Call Server is shutting down in {time}.{(sdt.TotalMinutes <= 3 ?  " Please log out." : "")}");
+                    else
+                        player.Session.WorldBroadcast($"Broadcast from System> ATTENTION - This Asheron's Call Server is shutting down NOW!!!!");
+
+                return DateTime.UtcNow;
+            }
+            else
+                return lastNoticeTime;
         }
     }
 }

@@ -1,8 +1,11 @@
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
+using System;
+using System.Collections.Generic;
+
+using ACE.Common;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Entity.Models;
 using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
 using ACE.Server.Network.GameMessages.Messages;
@@ -35,27 +38,14 @@ namespace ACE.Server.WorldObjects
             {
                 var chestResetInterval = ResetInterval ?? Default_ChestResetInterval;
 
-                if (chestResetInterval == 0)
+                if (chestResetInterval < 15)
                     chestResetInterval = Default_ChestResetInterval;
 
                 return chestResetInterval;
             }
         }
 
-        public double Default_ChestResetInterval = 120;
-
-        /// <summary>
-        /// The current player who has a chest opened
-        /// </summary>
-        public Player CurrentViewer;
-
-        public bool ResetMessagePending
-        {
-            get => GetProperty(PropertyBool.ResetMessagePending) ?? false;
-            set { if (!value) RemoveProperty(PropertyBool.ResetMessagePending); else SetProperty(PropertyBool.ResetMessagePending, value); }
-        }
-
-        public bool ResetGenerator;
+        public virtual double Default_ChestResetInterval => 120;
 
         /// <summary>
         /// A new biota be created taking all of its values from weenie.
@@ -78,16 +68,75 @@ namespace ACE.Server.WorldObjects
             ContainerCapacity = ContainerCapacity ?? 10;
             ItemCapacity = ItemCapacity ?? 120;
 
-            CurrentMotionState = motionClosed;  // do any chests default to open?
+            ActivationResponse |= ActivationResponse.Use;   // todo: fix broken data
+
+            CurrentMotionState = motionClosed;              // do any chests default to open?
 
             if (IsLocked)
                 DefaultLocked = true;
 
-            ResetGenerator = true;
+            if (DefaultLocked) // ignore regen interval, only regen on relock
+                NextGeneratorRegenerationTime = double.MaxValue;
         }
 
         protected static readonly Motion motionOpen = new Motion(MotionStance.NonCombat, MotionCommand.On);
         protected static readonly Motion motionClosed = new Motion(MotionStance.NonCombat, MotionCommand.Off);
+
+        public override ActivationResult CheckUseRequirements(WorldObject activator)
+        {
+            var baseRequirements = base.CheckUseRequirements(activator);
+            if (!baseRequirements.Success)
+                return baseRequirements;
+
+            if (!(activator is Player player))
+                return new ActivationResult(false);
+
+            if (IsLocked)
+            {
+                EnqueueBroadcast(new GameMessageSound(Guid, Sound.OpenFailDueToLock, 1.0f));
+                return new ActivationResult(false);
+            }
+
+            if (IsOpen)
+            {
+                // player has this chest open, close it
+                if (Viewer == player.Guid.Full)
+                    Close(player);
+
+                // else another player has this chest open - send error message?
+                else
+                {
+                    var currentViewer = CurrentLandblock.GetObject(Viewer) as Player;
+
+                    // current viewer not found, close it
+                    if (currentViewer == null)
+                        Close(null);
+                }
+
+                return new ActivationResult(false);
+            }
+
+            // handle quest requirements
+            if (Quest != null)
+            {
+                if (!player.QuestManager.HasQuest(Quest))
+                    player.QuestManager.Update(Quest);
+                else
+                {
+                    if (player.QuestManager.CanSolve(Quest))
+                    {
+                        player.QuestManager.Update(Quest);
+                    }
+                    else
+                    {
+                        player.QuestManager.HandleSolveError(Quest);
+                        return new ActivationResult(false);
+                    }
+                }
+            }
+
+            return new ActivationResult(true);
+        }
 
         /// <summary>
         /// This is raised by Player.HandleActionUseItem.<para />
@@ -100,74 +149,30 @@ namespace ACE.Server.WorldObjects
             if (!(wo is Player player))
                 return;
 
-            if (IsLocked)
-            {
-                if (player.LastUsedContainerId == Guid)
-                    player.LastUsedContainerId = ObjectGuid.Invalid;
-
-                EnqueueBroadcast(new GameMessageSound(Guid, Sound.OpenFailDueToLock, 1.0f));
-                return;
-            }
-
-            if (IsOpen)
-            {
-                // player has this chest open, close it
-                if (Viewer == player.Guid.Full)
-                    Close(player);
-
-                // else another player has this chest open - send error message?
-                return;
-            }
-
             // open chest
             Open(player);
         }
 
         public override void Open(Player player)
         {
-            CurrentViewer = player;
             base.Open(player);
 
-            // chests can have a couple of different profiles
-            // by default, most chests use the 'ResetInterval' setup
-            // some things like Mana Forge chests use the 'RegenOnClose' variant
-
-            // ResetInterval (default):
-
-            // if no ResetInterval is defined, the DefaultResetInterval of 2 mins is used.
-            // when a player opens this chest, a timer starts, and the chest will automatically close/reset in ResetInterval
-
-            // RegenOnClose (Mana Forge Chest etc.):
-
-            // this chest resets whenever it is closed
-
-            if (!ChestRegenOnClose && !ResetMessagePending)
+            if (!ResetMessagePending && !double.IsPositiveInfinity(ChestResetInterval))
             {
-                //Console.WriteLine($"{player.Name}.Open({Name}) - enqueueing reset in {ChestResetInterval}s");
+                var resetTimestamp = ResetTimestamp;
 
-                // uses the ResetInterval setup
                 var actionChain = new ActionChain();
                 actionChain.AddDelaySeconds(ChestResetInterval);
-                actionChain.AddAction(this, Reset);
+                actionChain.AddAction(this, () => Reset(resetTimestamp));
                 actionChain.EnqueueChain();
 
                 ResetMessagePending = true;
-
-                //UseTimestamp++;
             }
+        }
 
-            if (ActivationTalk != null)
-            {
-                // send only to activator?
-                player.Session.Network.EnqueueSend(new GameMessageSystemChat(ActivationTalk, ChatMessageType.Broadcast));
-            }
-
-            if (SpellDID.HasValue)
-            {
-                var spell = new Server.Entity.Spell((uint)SpellDID);
-
-                TryCastSpell(spell, player, this);
-            }
+        public override void Close(Player player)
+        {
+            Close(player);
         }
 
         /// <summary>
@@ -176,18 +181,22 @@ namespace ACE.Server.WorldObjects
         public void Close(Player player, bool tryReset = true)
         {
             base.Close(player);
-            CurrentViewer = null;
 
             if (ChestRegenOnClose && tryReset)
-                Reset();
+                Reset(ResetTimestamp);
         }
 
-        public override void Reset()
+        public void Reset(double? resetTimestamp)
         {
+            if (resetTimestamp != ResetTimestamp)
+                return;     // already cleared by previous reset
+
             // TODO: if 'ResetInterval' style, do we want to ensure a minimum amount of time for the last viewer?
 
+            var player = CurrentLandblock.GetObject(Viewer) as Player;
+
             if (IsOpen)
-                Close(CurrentViewer, false);
+                Close(player, false);
 
             if (DefaultLocked && !IsLocked)
             {
@@ -197,11 +206,56 @@ namespace ACE.Server.WorldObjects
 
             if (IsGenerator)
             {
-                ResetGenerator = true;
-                Generator_HeartBeat();
+                ResetGenerator();
+                if (InitCreate > 0)
+                    Generator_Regeneration();
             }
 
+            ResetTimestamp = Time.GetUnixTime();
             ResetMessagePending = false;
+        }
+
+        public override void ResetGenerator()
+        {
+            foreach (var generator in GeneratorProfiles)
+            {
+                var profileReset = false;
+
+                foreach (var rNode in generator.Spawned.Values)
+                {
+                    var wo = rNode.TryGetWorldObject();
+
+                    if (wo != null)
+                    {
+                        if (TryRemoveFromInventory(wo.Guid)) // only affect contained items.
+                        {
+                            wo.Destroy();
+                        }
+
+                        if (!(wo is Creature))
+                            profileReset = true;
+                    }
+                }
+
+                if (profileReset)
+                {
+                    generator.Spawned.Clear();
+                    generator.SpawnQueue.Clear();
+                }
+            }
+
+            if (GeneratedTreasureItem)
+            {
+                var items = new List<WorldObject>();
+                foreach (var item in Inventory.Values)
+                    items.Add(item);
+                foreach (var item in items)
+                {
+                    if (TryRemoveFromInventory(item.Guid))
+                        item.Destroy();
+                }
+                GeneratedTreasureItem = false;
+            }
         }
 
         protected override float DoOnOpenMotionChanges()
@@ -237,9 +291,9 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Used for unlocking a chest via a key
         /// </summary>
-        public UnlockResults Unlock(uint unlockerGuid, string keyCode)
+        public UnlockResults Unlock(uint unlockerGuid, Key key, string keyCode = null)
         {
-            var result = LockHelper.Unlock(this, keyCode);
+            var result = LockHelper.Unlock(this, key, keyCode);
 
             if (result == UnlockResults.UnlockSuccess)
                 LastUnlocker = unlockerGuid;

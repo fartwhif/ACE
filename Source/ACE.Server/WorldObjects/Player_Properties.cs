@@ -1,7 +1,9 @@
-
 using ACE.Common;
+using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Server.Network.GameMessages;
+using ACE.Server.Network.GameMessages.Messages;
 
 namespace ACE.Server.WorldObjects
 {
@@ -9,17 +11,9 @@ namespace ACE.Server.WorldObjects
     {
         public override string Name
         {
-            get => IsPlussed ? (((CloakStatus ?? ACE.Entity.Enum.CloakStatus.Off) < ACE.Entity.Enum.CloakStatus.Player) ? "+" + base.Name : base.Name) : base.Name;
+            get => IsPlussed && CloakStatus < CloakStatus.Player ? "+" + base.Name : base.Name;
 
-            set
-            {
-                var name = value;
-
-                if (name.StartsWith("+"))
-                    name = name.Substring(1);
-
-                base.Name = name;
-            }
+            set => base.Name = value.TrimStart('+');
         }
 
         // ========================================
@@ -33,12 +27,6 @@ namespace ACE.Server.WorldObjects
         }
 
         public bool IsSentinel
-        {
-            get => GetProperty(PropertyBool.IsSentinel) ?? false;
-            set { if (!value) RemoveProperty(PropertyBool.IsSentinel); else SetProperty(PropertyBool.IsSentinel, value); }
-        }
-
-        public bool IsEnvoy
         {
             get => GetProperty(PropertyBool.IsSentinel) ?? false;
             set { if (!value) RemoveProperty(PropertyBool.IsSentinel); else SetProperty(PropertyBool.IsSentinel, value); }
@@ -64,9 +52,14 @@ namespace ACE.Server.WorldObjects
 
         public bool IsPlussed
         {
-            get => Character.IsPlussed || (ConfigManager.Config.Server.Accounts.OverrideCharacterPermissions && Session.AccessLevel > AccessLevel.Advocate);
+            get => (Character != null && Character.IsPlussed) || (Session != null && ConfigManager.Config.Server.Accounts.OverrideCharacterPermissions && Session.AccessLevel > AccessLevel.Advocate);
         }
 
+        public string GodState
+        {
+            get => GetProperty(PropertyString.GodState);
+            set { if (value == null) RemoveProperty(PropertyString.GodState); else SetProperty(PropertyString.GodState, value); }
+        }
 
         // ========================================
         // ========== Account Properties ==========
@@ -223,6 +216,45 @@ namespace ACE.Server.WorldObjects
         {
             get => GetProperty(PropertyInt.HouseRentTimestamp);
             set { if (!value.HasValue) RemoveProperty(PropertyInt.HouseRentTimestamp); else SetProperty(PropertyInt.HouseRentTimestamp, value.Value); }
+        }
+
+        /// <summary>
+        /// The timestamp when the player last logged in
+        /// </summary>
+        public double? LoginTimestamp
+        {
+            get => GetProperty(PropertyFloat.LoginTimestamp);
+            set { if (!value.HasValue) RemoveProperty(PropertyFloat.LoginTimestamp); else SetProperty(PropertyFloat.LoginTimestamp, value.Value); }
+        }
+
+        /// <summary>
+        /// The timestamp when the player last logged off
+        /// </summary>
+        public double? LogoffTimestamp
+        {
+            get => GetProperty(PropertyFloat.LogoffTimestamp);
+            set { if (!value.HasValue) RemoveProperty(PropertyFloat.LogoffTimestamp); else SetProperty(PropertyFloat.LogoffTimestamp, value.Value); }
+        }
+
+        /// <summary>
+        /// The timestamp when the last teleport started
+        /// </summary>
+        public double? LastTeleportStartTimestamp
+        {
+            get => GetProperty(PropertyFloat.LastTeleportStartTimestamp);
+            set { if (!value.HasValue) RemoveProperty(PropertyFloat.LastTeleportStartTimestamp); else SetProperty(PropertyFloat.LastTeleportStartTimestamp, value.Value); }
+        }
+
+        public bool SpellComponentsRequired
+        {
+            get => GetProperty(PropertyBool.SpellComponentsRequired) ?? true;
+            set { if (value) RemoveProperty(PropertyBool.SpellComponentsRequired); else SetProperty(PropertyBool.SpellComponentsRequired, value); }
+        }
+
+        public bool SafeSpellComponents
+        {
+            get => GetProperty(PropertyBool.SafeSpellComponents) ?? false;
+            set { if (!value) RemoveProperty(PropertyBool.SafeSpellComponents); else SetProperty(PropertyBool.SafeSpellComponents, value); }
         }
 
 
@@ -710,6 +742,390 @@ namespace ACE.Server.WorldObjects
         {
             get => GetProperty(PropertyInt.AugmentationIncreasedSpellDuration) ?? 0;
             set { if (value == 0) RemoveProperty(PropertyInt.AugmentationIncreasedSpellDuration); else SetProperty(PropertyInt.AugmentationIncreasedSpellDuration, value); }
+        }
+
+        // ========================================
+        // ======= Luminance Augmentations ========
+        // ========================================
+
+        /// <summary>
+        /// Aura of Aetheric Vision
+        /// Slightly increase your chance to gain an Aetheria Surge on a successful hit with a weapon or spell (max 5 stacks)
+        /// </summary>
+        public int LumAugSurgeChanceRating
+        {
+            get => GetProperty(PropertyInt.LumAugSurgeChanceRating) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugSurgeChanceRating); else SetProperty(PropertyInt.LumAugSurgeChanceRating, value); }
+        }
+
+        /// <summary>
+        /// Aura of the Craftsman
+        /// Increases the effective skill level of your crafting and tinkering skills by 1 point (max 5 stacks)
+        /// </summary>
+        public int LumAugSkilledCraft
+        {
+            get => GetProperty(PropertyInt.LumAugSkilledCraft) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugSkilledCraft); else SetProperty(PropertyInt.LumAugSkilledCraft, value); }
+        }
+
+        /// <summary>
+        /// Aura of Glory / Aura of Retribution (Seer)
+        /// Increases your critical damage rating by 1 point (max 5 stacks glory, max 5 stacks retribution)
+        /// </summary>
+        public int LumAugCritDamageRating
+        {
+            get => GetProperty(PropertyInt.LumAugCritDamageRating) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugCritDamageRating); else SetProperty(PropertyInt.LumAugCritDamageRating, value); }
+        }
+
+        /// <summary>
+        /// Aura of Mana Flow
+        /// Reduces the mana consumption of your items equal to 5 rating points per level (max 5 stacks)
+        /// This is expressed as a rating, where the mana consumption is multiplied by the following: 100 / (100 + Mana Consumption Reduction Rating)
+        /// </summary>
+        public int LumAugItemManaUsage
+        {
+            get => GetProperty(PropertyInt.LumAugItemManaUsage) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugItemManaUsage); else SetProperty(PropertyInt.LumAugItemManaUsage, value); }
+        }
+
+        /// <summary>
+        /// Aura of Mana Infusion
+        /// Increases the mana provided by Mana Stones to your items (max 5 stacks)
+        /// The mana is increased by a rating of 5 per level.
+        /// </summary>
+        public int LumAugItemManaGain
+        {
+            get => GetProperty(PropertyInt.LumAugItemManaGain) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugItemManaGain); else SetProperty(PropertyInt.LumAugItemManaGain, value); }
+        }
+
+        /// <summary>
+        /// Aura of Protection / Aura of Invulnerability (Seer)
+        /// Increases your damage reduction rating by 1 (max 5 stacks protection, max 5 stacks invulnerability)
+        /// </summary>
+        public int LumAugDamageReductionRating
+        {
+            get => GetProperty(PropertyInt.LumAugDamageReductionRating) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugDamageReductionRating); else SetProperty(PropertyInt.LumAugDamageReductionRating, value); }
+        }
+
+        /// <summary>
+        /// Aura of Purity
+        /// Increases the amount that healing affects you by 1 heal rating (max 5 stacks)
+        /// </summary>
+        public int LumAugHealingRating
+        {
+            get => GetProperty(PropertyInt.LumAugHealingRating) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugHealingRating); else SetProperty(PropertyInt.LumAugHealingRating, value); }
+        }
+
+        /// <summary>
+        /// Skill
+        /// Gain an additional skill credit (max 2 stacks)
+        /// </summary>
+
+        // where to store the stack data for this?
+
+        /// <summary>
+        /// Aura of Temperance / Aura of Hardening (Seer)
+        /// Increases your critical damage reduction rating by 1 (max 5 stacks temperance, max 5 stacks hardening)
+        /// </summary>
+        public int LumAugCritReductionRating
+        {
+            get => GetProperty(PropertyInt.LumAugCritReductionRating) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugCritReductionRating); else SetProperty(PropertyInt.LumAugCritReductionRating, value); }
+        }
+
+        /// <summary>
+        /// Aura of Valor / Aura of Destruction (Seer)
+        /// Increases your damage rating by 1 (max 5 stacks valor, max 5 stacks destruction)
+        /// </summary>
+        public int LumAugDamageRating
+        {
+            get => GetProperty(PropertyInt.LumAugDamageRating) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugDamageRating); else SetProperty(PropertyInt.LumAugDamageRating, value); }
+        }
+
+        /// <summary>
+        /// Aura of the World
+        /// Increases the effective skill level of all your skills by 1 point (max 10 stacks)
+        /// </summary>
+        public int LumAugAllSkills
+        {
+            get => GetProperty(PropertyInt.LumAugAllSkills) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugAllSkills); else SetProperty(PropertyInt.LumAugAllSkills, value); }
+        }
+
+        // ============= Seer Auras ===============
+
+        /// <summary>
+        /// Aura of Specialization
+        /// Increases your specialized skills by 2 (max 5 stacks)
+        /// </summary>
+        public int LumAugSkilledSpec
+        {
+            get => GetProperty(PropertyInt.LumAugSkilledSpec) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugSkilledSpec); else SetProperty(PropertyInt.LumAugSkilledSpec, value); }
+        }
+
+        // ============== Masteries ===============
+
+        public int MeleeMastery
+        {
+            get => GetProperty(PropertyInt.MeleeMastery) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.MeleeMastery); else SetProperty(PropertyInt.MeleeMastery, value); }
+        }
+
+        public int RangedMastery
+        {
+            get => GetProperty(PropertyInt.RangedMastery) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.RangedMastery); else SetProperty(PropertyInt.RangedMastery, value); }
+        }
+
+        // ============ Enlightenment =============
+
+        public int Enlightenment
+        {
+            get => GetProperty(PropertyInt.Enlightenment) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.Enlightenment); else SetProperty(PropertyInt.Enlightenment, value); }
+        }
+
+        public int LumAugVitality
+        {
+            get => GetProperty(PropertyInt.LumAugVitality) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyInt.LumAugVitality); else SetProperty(PropertyInt.LumAugVitality, value); }
+        }
+
+        // ========================================
+        // =============== Rares ==================
+        // ========================================
+        public double LastRareUsedTimestamp
+        {
+            get => GetProperty(PropertyFloat.LastRareUsedTimestamp) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyFloat.LastRareUsedTimestamp); else SetProperty(PropertyFloat.LastRareUsedTimestamp, value); }
+        }
+
+        // ========================================
+        // =============== Barber =================
+        // ========================================
+        public bool BarberActive
+        {
+            get => GetProperty(PropertyBool.BarberActive) ?? false;
+            set { if (!value) RemoveProperty(PropertyBool.BarberActive); else SetProperty(PropertyBool.BarberActive, value); }
+        }
+
+
+        public void UpdateProperty(WorldObject obj, PropertyInt prop, int? value, bool broadcast = false)
+        {
+            if (value != null)
+                obj.SetProperty(prop, value.Value);
+            else
+                obj.RemoveProperty(prop);
+
+            var msg = new GameMessagePublicUpdatePropertyInt(obj, prop, value ?? 0);
+
+            SendNetwork(msg, broadcast);
+        }
+
+        public void UpdateProperty(WorldObject obj, PropertyBool prop, bool? value, bool broadcast = false)
+        {
+            if (value != null)
+                obj.SetProperty(prop, value.Value);
+            else
+                obj.RemoveProperty(prop);
+
+            var msg = new GameMessagePublicUpdatePropertyBool(obj, prop, value ?? false);
+
+            SendNetwork(msg, broadcast);
+        }
+
+        public void UpdateProperty(WorldObject obj, PropertyFloat prop, double? value, bool broadcast = false)
+        {
+            if (value != null)
+                obj.SetProperty(prop, value.Value);
+            else
+                obj.RemoveProperty(prop);
+
+            var msg = new GameMessagePublicUpdatePropertyFloat(obj, prop, value ?? 0.0);
+
+            SendNetwork(msg, broadcast);
+        }
+
+        public void UpdateProperty(WorldObject obj, PropertyDataId prop, uint? value, bool broadcast = false)
+        {
+            if (value != null)
+                obj.SetProperty(prop, value.Value);
+            else
+                obj.RemoveProperty(prop);
+
+            var msg = new GameMessagePublicUpdatePropertyDataID(obj, prop, value ?? 0);
+
+            SendNetwork(msg, broadcast);
+        }
+
+        /// <summary>
+        /// Updates a property on the server, and broadcasts to appropriate players
+        /// </summary>
+        /// <param name="broadcast">If true, also broadcasts to all players who know about this player</param>
+        public void UpdateProperty(PropertyInstanceId prop, uint? value, bool broadcast = false)
+        {
+            UpdateProperty(this, prop, value, broadcast);
+        }
+
+        public void UpdateProperty(WorldObject obj, PropertyInstanceId prop, uint? value, bool broadcast = false)
+        {
+            if (value != null)
+                obj.SetProperty(prop, value.Value);
+            else
+                obj.RemoveProperty(prop);
+
+            var msg = new GameMessagePublicUpdateInstanceID(obj, prop, new ObjectGuid(value ?? 0));
+
+            SendNetwork(msg, broadcast);
+        }
+
+        public void UpdateProperty(WorldObject obj, PropertyString prop, string value, bool broadcast = false)
+        {
+            if (value != null)
+                obj.SetProperty(prop, value);
+            else
+                obj.RemoveProperty(prop);
+
+            // the client seems to cache these values somewhere,
+            // and the object will not update until relogging or CO
+            var msg = new GameMessagePublicUpdatePropertyString(obj, prop, value);
+
+            SendNetwork(msg, broadcast);
+        }
+
+        public void UpdateProperty(WorldObject obj, PropertyInt64 prop, long? value, bool broadcast = false)
+        {
+            if (value != null)
+                obj.SetProperty(prop, value.Value);
+            else
+                obj.RemoveProperty(prop);
+
+            var msg = new GameMessagePublicUpdatePropertyInt64(obj, prop, value ?? 0);
+
+            SendNetwork(msg, broadcast);
+        }
+
+        public void SendNetwork(GameMessage msg, bool broadcast)
+        {
+            if (broadcast)
+                EnqueueBroadcast(msg);
+            else
+                Session.Network.EnqueueSend(msg);
+        }
+
+        // ========================================
+        // =============== Gags ===================
+        // ========================================
+        public double AllegianceGagDuration
+        {
+            get => GetProperty(PropertyFloat.AllegianceGagDuration) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyFloat.AllegianceGagDuration); else SetProperty(PropertyFloat.AllegianceGagDuration, value); }
+        }
+
+        public double AllegianceGagTimestamp
+        {
+            get => GetProperty(PropertyFloat.AllegianceGagTimestamp) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyFloat.AllegianceGagTimestamp); else SetProperty(PropertyFloat.AllegianceGagTimestamp, value); }
+        }
+
+        public double GagDuration
+        {
+            get => GetProperty(PropertyFloat.GagDuration) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyFloat.GagDuration); else SetProperty(PropertyFloat.GagDuration, value); }
+        }
+
+        public double GagTimestamp
+        {
+            get => GetProperty(PropertyFloat.GagTimestamp) ?? 0;
+            set { if (value == 0) RemoveProperty(PropertyFloat.GagTimestamp); else SetProperty(PropertyFloat.GagTimestamp, value); }
+        }
+
+        public bool IsAllegianceGagged
+        {
+            get => GetProperty(PropertyBool.IsAllegianceGagged) ?? false;
+            set { if (!value) RemoveProperty(PropertyBool.IsAllegianceGagged); else SetProperty(PropertyBool.IsAllegianceGagged, value); }
+        }
+
+        public bool IsGagged
+        {
+            get => GetProperty(PropertyBool.IsGagged) ?? false;
+            set { if (!value) RemoveProperty(PropertyBool.IsGagged); else SetProperty(PropertyBool.IsGagged, value); }
+        }
+
+        public bool RecallsDisabled
+        {
+            get => GetProperty(PropertyBool.RecallsDisabled) ?? false;
+            set { if (!value) RemoveProperty(PropertyBool.RecallsDisabled); else SetProperty(PropertyBool.RecallsDisabled, value); }
+        }
+
+        public AetheriaBitfield AetheriaFlags
+        {
+            get => (AetheriaBitfield)(GetProperty(PropertyInt.AetheriaBitfield) ?? 0);
+            set { if (value == 0) RemoveProperty(PropertyInt.AetheriaBitfield); else SetProperty(PropertyInt.AetheriaBitfield, (int)value); }
+        }
+
+        public SquelchMask SquelchGlobal
+        {
+            get => (SquelchMask)(GetProperty(PropertyInt.SquelchGlobal) ?? 0);
+            set { if (value == 0) RemoveProperty(PropertyInt.SquelchGlobal); else SetProperty(PropertyInt.SquelchGlobal, (int)value); }
+        }
+
+        public uint? RequestedAppraisalTarget
+        {
+            get => GetProperty(PropertyInstanceId.RequestedAppraisalTarget);
+            set { if (!value.HasValue) RemoveProperty(PropertyInstanceId.RequestedAppraisalTarget); else SetProperty(PropertyInstanceId.RequestedAppraisalTarget, value.Value); }
+        }
+
+        public double? AppraisalRequestedTimestamp
+        {
+            get => GetProperty(PropertyFloat.AppraisalRequestedTimestamp);
+            set { if (!value.HasValue) RemoveProperty(PropertyFloat.AppraisalRequestedTimestamp); else SetProperty(PropertyFloat.AppraisalRequestedTimestamp, value.Value); }
+        }
+
+        /// <summary>
+        /// ACE is currently using this for the last successful appraised object guid
+        /// </summary>
+        public uint? CurrentAppraisalTarget
+        {
+            get => GetProperty(PropertyInstanceId.CurrentAppraisalTarget);
+            set { if (!value.HasValue) RemoveProperty(PropertyInstanceId.CurrentAppraisalTarget); else SetProperty(PropertyInstanceId.CurrentAppraisalTarget, value.Value); }
+        }
+
+        /// <summary>
+        /// Returns player's augmentation resistance for damage type
+        /// </summary>
+        public int GetAugmentationResistance(DamageType damageType)
+        {
+            switch (damageType)
+            {
+                case DamageType.Slash:
+                    return AugmentationResistanceSlash;
+
+                case DamageType.Pierce:
+                    return AugmentationResistancePierce;
+
+                case DamageType.Bludgeon:
+                    return AugmentationResistanceBlunt;
+
+                case DamageType.Fire:
+                    return AugmentationResistanceFire;
+
+                case DamageType.Cold:
+                    return AugmentationResistanceFrost;
+
+                case DamageType.Acid:
+                    return AugmentationResistanceAcid;
+
+                case DamageType.Electric:
+                    return AugmentationResistanceLightning;
+            }
+            return 0;
         }
     }
 }

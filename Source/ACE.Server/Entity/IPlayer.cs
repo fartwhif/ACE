@@ -1,5 +1,6 @@
 using System;
 
+using ACE.Database.Models.Auth;
 using ACE.Entity;
 using ACE.Entity.Enum.Properties;
 using ACE.Server.WorldObjects;
@@ -14,6 +15,7 @@ namespace ACE.Server.Entity
     {
         ObjectGuid Guid { get; }
 
+        Account Account { get; }
 
         bool? GetProperty(PropertyBool property);
         uint? GetProperty(PropertyDataId property);
@@ -49,6 +51,10 @@ namespace ACE.Server.Entity
         int? Gender { get; }
 
 
+        bool IsDeleted { get; }
+        bool IsPendingDeletion { get; }
+
+
         uint? MonarchId { get; set; }
 
         uint? PatronId { get; set; }
@@ -60,6 +66,8 @@ namespace ACE.Server.Entity
         int? AllegianceRank { get; set; }
 
         int? AllegianceOfficerRank { get; set; }
+
+        bool ExistedBeforeAllegianceXpChanges { get; set; }
 
         uint? HouseId { get; set; }
 
@@ -78,5 +86,14 @@ namespace ACE.Server.Entity
         Allegiance Allegiance { get; set; }
 
         AllegianceNode AllegianceNode { get; set; }
+
+        /// <summary>
+        /// This method forces a player to be immediately saved to the database
+        /// It should only be called in critical sections that must guarantee
+        /// lock-step with other players
+        /// </summary>
+        void SaveBiotaToDatabase(bool enqueueSave = true);
+
+        void UpdateProperty(PropertyInstanceId prop, uint? value, bool broadcast = false);
     }
 }

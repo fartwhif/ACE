@@ -43,6 +43,7 @@ namespace ACE.Entity.Enum
         Clothing            = 0x80000000 | HeadWear | ChestWear | AbdomenWear | UpperArmWear | LowerArmWear | HandWear | UpperLegWear | LowerLegWear | FootWear,
         Armor               = ChestArmor | AbdomenArmor | UpperArmArmor | LowerArmArmor | UpperLegArmor | LowerLegArmor | FootWear,
         ArmorExclusive      = ChestArmor | AbdomenArmor | UpperArmArmor | LowerArmArmor | UpperLegArmor | LowerLegArmor,
+        Extremity           = HeadWear | HandWear | FootWear,
         Jewelry             = NeckWear | WristWearLeft | WristWearRight | FingerWearLeft | FingerWearRight | TrinketOne | Cloak | SigilOne | SigilTwo | SigilThree,
         WristWear           = WristWearLeft | WristWearRight,
         FingerWear          = FingerWearLeft | FingerWearRight,
@@ -51,6 +52,7 @@ namespace ACE.Entity.Enum
         Weapon              = SigilTwo | TrinketOne | Held,
         WeaponReadySlot     = SigilOne | SigilTwo | TrinketOne | Held,
         Selectable          = MeleeWeapon | Shield | MissileWeapon | Held | TwoHanded,
+        SelectablePlusAmmo  = Selectable | MissileAmmo,
         All                 = 0x7FFFFFFF,
         CanGoInReadySlot    = 0x7FFFFFFF
     }

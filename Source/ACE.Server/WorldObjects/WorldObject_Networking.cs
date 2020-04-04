@@ -4,40 +4,41 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 
-using ACE.Database;
 using ACE.DatLoader;
 using ACE.DatLoader.Entity;
 using ACE.DatLoader.FileTypes;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Entity.Models;
 using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
+using ACE.Server.Managers;
 using ACE.Server.Network;
 using ACE.Server.Network.GameMessages;
 using ACE.Server.Network.GameMessages.Messages;
-using ACE.Server.Network.Structure;
 using ACE.Server.Network.Sequence;
+using ACE.Server.Network.Structure;
 using ACE.Server.Physics;
 
 namespace ACE.Server.WorldObjects
 {
     partial class WorldObject 
     {
-        public virtual void SerializeUpdateObject(BinaryWriter writer)
+        public virtual void SerializeUpdateObject(BinaryWriter writer, bool adminvision = false, bool changenodraw = false)
         {
             // content of these 2 is the same? TODO: Validate that?
-            SerializeCreateObject(writer);
+            SerializeCreateObject(writer, false, adminvision, changenodraw);
         }
 
-        public virtual void SerializeCreateObject(BinaryWriter writer)
+        public virtual void SerializeCreateObject(BinaryWriter writer, bool adminvision = false, bool changenodraw = false)
         {
-            SerializeCreateObject(writer, false);
+            SerializeCreateObject(writer, false, adminvision, changenodraw);
         }
 
-        public virtual void SerializeGameDataOnly(BinaryWriter writer)
+        public virtual void SerializeGameDataOnly(BinaryWriter writer, bool adminvision = false)
         {
-            SerializeCreateObject(writer, true);
+            SerializeCreateObject(writer, true, adminvision, false);
         }
 
         /// <summary>
@@ -52,33 +53,39 @@ namespace ACE.Server.WorldObjects
             writer.Write(Sequences.GetNextSequence(SequenceType.ObjectVisualDesc));
         }
 
-        private void SerializeCreateObject(BinaryWriter writer, bool gamedataonly)
+        private void SerializeCreateObject(BinaryWriter writer, bool gamedataonly, bool adminvision = false, bool changenodraw = false)
         {
             writer.WriteGuid(Guid);
 
             if (!gamedataonly)
             {
                 SerializeModelData(writer);
-                SerializePhysicsData(writer);
+                SerializePhysicsData(writer, adminvision, changenodraw);
             }
 
-            var weenieFlags = CalculatedWeenieHeaderFlag();
-            var weenieFlags2 = CalculatedWeenieHeaderFlag2();
-            var descriptionFlags = CalculatedDescriptionFlag();
+            var weenieFlags =  CalculateWeenieHeaderFlag();
+            var weenieFlags2 = CalculateWeenieHeaderFlag2();
+
+            UpdateObjectDescriptionFlags();
+
+            var objDescriptionFlags = ObjectDescriptionFlags;
+
+            if (adminvision)
+                objDescriptionFlags &= ~ObjectDescriptionFlag.UiHidden;
 
             writer.Write((uint)weenieFlags);
             writer.WriteString16L(Name ?? String.Empty);
             writer.WritePackedDword(WeenieClassId);
             writer.WritePackedDwordOfKnownType(IconId, 0x6000000);
             writer.Write((uint)ItemType);
-            writer.Write((uint)descriptionFlags);
+            writer.Write((uint)objDescriptionFlags);
             writer.Align();
 
-            if ((descriptionFlags & ObjectDescriptionFlag.IncludesSecondHeader) != 0)
+            if ((objDescriptionFlags & ObjectDescriptionFlag.IncludesSecondHeader) != 0)
                 writer.Write((uint)weenieFlags2);
 
             if ((weenieFlags & WeenieHeaderFlag.PluralName) != 0)
-                writer.WriteString16L(NamePlural);
+                writer.WriteString16L(PluralName);
 
             if ((weenieFlags & WeenieHeaderFlag.ItemsCapacity) != 0)
                 writer.Write(ItemCapacity ?? 0);
@@ -99,7 +106,7 @@ namespace ACE.Server.WorldObjects
                 writer.Write(UseRadius ?? 0u);
 
             if ((weenieFlags & WeenieHeaderFlag.TargetType) != 0)
-                writer.Write(TargetType ?? 0);
+                writer.Write((uint?)TargetType ?? 0u);
 
             if ((weenieFlags & WeenieHeaderFlag.UiEffects) != 0)
                 writer.Write((uint?)UiEffects ?? 0u);
@@ -157,7 +164,7 @@ namespace ACE.Server.WorldObjects
                 // if mansion, send house owner from master copy
                 var houseOwner = HouseOwner;
                 var house = this as House;
-                if (house != null && house.HouseType == ACE.Entity.Enum.HouseType.Mansion)
+                if (house != null && house.HouseType == HouseType.Mansion)
                     houseOwner = house.LinkedHouses[0].HouseOwner;
 
                 writer.Write(houseOwner ?? 0);
@@ -169,14 +176,14 @@ namespace ACE.Server.WorldObjects
 
                 // if house object is in dungeon,
                 // send the permissions from the outdoor house
-                if (house.CurrentLandblock.IsDungeon)
+                if (house.HouseType != HouseType.Apartment && house.CurrentLandblock.IsDungeon)
                 {
                     house = house.RootHouse;
                 }
                 else
                 {
                     // if mansion, send permissions from master copy
-                    if (house.HouseType == ACE.Entity.Enum.HouseType.Mansion)
+                    if (house.HouseType == HouseType.Mansion)
                         house = house.LinkedHouses[0];
                 }
 
@@ -227,9 +234,9 @@ namespace ACE.Server.WorldObjects
 
             foreach (var palette in objDesc.SubPalettes)
             {
-                writer.WritePackedDwordOfKnownType(palette.SubID, 0x4000000);
+                writer.WritePackedDwordOfKnownType(palette.SubPaletteId, 0x4000000);
                 writer.Write((byte)palette.Offset);
-                writer.Write((byte)palette.NumColors);
+                writer.Write((byte)palette.Length);
             }
 
             foreach (var texture in objDesc.TextureChanges)
@@ -241,8 +248,8 @@ namespace ACE.Server.WorldObjects
 
             foreach (var model in objDesc.AnimPartChanges)
             {
-                writer.Write(model.PartIndex);
-                writer.WritePackedDwordOfKnownType(model.PartID, 0x1000000);
+                writer.Write(model.Index);
+                writer.WritePackedDwordOfKnownType(model.AnimationId, 0x1000000);
             }
 
             writer.Align();
@@ -272,13 +279,27 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Sent as part of the CreateObject message, PhysicsDesc in protocol docs
         /// </summary>
-        private void SerializePhysicsData(BinaryWriter writer)
+        private void SerializePhysicsData(BinaryWriter writer, bool adminvision = false, bool changenodraw = false)
         {
             var physicsDescriptionFlag = CalculatedPhysicsDescriptionFlag();
+
+            if (adminvision && this is Player && CloakStatus == CloakStatus.On)
+            {
+                physicsDescriptionFlag |= PhysicsDescriptionFlag.Translucency;
+            }
 
             writer.Write((uint)physicsDescriptionFlag);
 
             var physicsState = GetPhysicsStateOrDefault();
+
+            if (changenodraw)
+            {
+                physicsState &= ~PhysicsState.NoDraw;
+                physicsState &= ~PhysicsState.Cloaked;
+            }
+
+            if (this is SpellProjectile && PropertyManager.GetBool("spell_projectile_ethereal").Item)
+                physicsState |= PhysicsState.Ethereal;
 
             writer.Write((uint)physicsState);
 
@@ -329,37 +350,40 @@ namespace ACE.Server.WorldObjects
             }
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.ObjScale) != 0)
-                writer.Write(ObjScale ?? 0u);
+                writer.Write(ObjScale ?? 0f);
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.Friction) != 0)
-                writer.Write(Friction ?? 0u);
+                writer.Write(Friction ?? 0f);
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.Elasticity) != 0)
-                writer.Write(Elasticity ?? 0u);
+                writer.Write(Elasticity ?? 0f);
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.Translucency) != 0)
-                writer.Write(Translucency ?? 0u);
+                if (adminvision && this is Player && CloakStatus == CloakStatus.On)
+                    writer.Write(0.5f);
+                else
+                    writer.Write(Translucency ?? 0f);
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.Velocity) != 0)
             {
-                Velocity.Serialize(writer);
+                writer.Write(Velocity);
             }
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.Acceleration) != 0)
             {
-                Acceleration.Serialize(writer);
+                writer.Write(Acceleration);
             }
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.Omega) != 0)
             {
-                Omega.Serialize(writer);
+                writer.Write(Omega);
             }
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.DefaultScript) != 0)
                 writer.Write(DefaultScriptId ?? 0);
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.DefaultScriptIntensity) != 0)
-                writer.Write(DefaultScriptIntensity ?? 0);
+                writer.Write(DefaultScriptIntensity ?? 0f);
 
             // timestamps
             writer.Write(Sequences.GetCurrentSequence(SequenceType.ObjectPosition));        // 0
@@ -375,12 +399,19 @@ namespace ACE.Server.WorldObjects
             writer.Align();
         }
 
+        public DateTime LastUpdatePosition;
+
         /// <summary>
         /// Broadcast position updates to players within range
         /// </summary>
-        protected void SendUpdatePosition()
+        /// <param name="adminMove">only used if admin is teleporting a non-player object</param>
+        public void SendUpdatePosition(bool adminMove = false)
         {
-            EnqueueBroadcast(new GameMessageUpdatePosition(this));
+            //Console.WriteLine($"{Name}.SendUpdatePosition({Location.ToLOCString()})");
+
+            EnqueueBroadcast(new GameMessageUpdatePosition(this, adminMove));
+
+            LastUpdatePosition = DateTime.UtcNow;
         }
 
         public virtual void SendPartialUpdates(Session targetSession, List<GenericPropertyId> properties)
@@ -449,13 +480,13 @@ namespace ACE.Server.WorldObjects
             if ((Translucency != null) && (Math.Abs(Translucency ?? 0) >= 0.001))
                 physicsDescriptionFlag |= PhysicsDescriptionFlag.Translucency;
 
-            if (Velocity != null)
+            if (Velocity != Vector3.Zero)
                 physicsDescriptionFlag |= PhysicsDescriptionFlag.Velocity;
 
-            if (Acceleration != null)
+            if (Acceleration != Vector3.Zero)
                 physicsDescriptionFlag |= PhysicsDescriptionFlag.Acceleration;
 
-            if (Omega != null)
+            if (Omega != Vector3.Zero)
                 physicsDescriptionFlag |= PhysicsDescriptionFlag.Omega;
 
             if (DefaultScriptId != null)
@@ -658,17 +689,17 @@ namespace ACE.Server.WorldObjects
             return physicsState;
         }
 
-        protected WeenieHeaderFlag CalculatedWeenieHeaderFlag()
+        protected WeenieHeaderFlag CalculateWeenieHeaderFlag()
         {
             var weenieHeaderFlag = WeenieHeaderFlag.None;
 
-            if (NamePlural != null)
+            if (PluralName != null)
                 weenieHeaderFlag |= WeenieHeaderFlag.PluralName;
 
-            if (ItemCapacity != null)
+            if (ItemCapacity != null && !(this is SlumLord))
                 weenieHeaderFlag |= WeenieHeaderFlag.ItemsCapacity;
 
-            if (ContainerCapacity != null)
+            if (ContainerCapacity != null && !(this is SlumLord))
                 weenieHeaderFlag |= WeenieHeaderFlag.ContainersCapacity;
 
             if (AmmoType != null)
@@ -732,7 +763,7 @@ namespace ACE.Server.WorldObjects
             if ((Workmanship != null) && (uint?)Workmanship != 0u)
                 weenieHeaderFlag |= WeenieHeaderFlag.Workmanship;
 
-            if (EncumbranceVal != 0)
+            if (EncumbranceVal != 0 && !(this is Creature) && !(this is SpellProjectile))
                 weenieHeaderFlag |= WeenieHeaderFlag.Burden;
 
             if ((SpellDID != null) && (SpellDID != 0))
@@ -744,7 +775,7 @@ namespace ACE.Server.WorldObjects
             {
                 weenieHeaderFlag |= WeenieHeaderFlag.HouseRestrictions;
 
-                if (house.HouseType == ACE.Entity.Enum.HouseType.Mansion)
+                if (house.HouseType == HouseType.Mansion)
                     houseOwner = house.LinkedHouses[0].HouseOwner;
             }
 
@@ -770,7 +801,7 @@ namespace ACE.Server.WorldObjects
             return weenieHeaderFlag;
         }
 
-        private WeenieHeaderFlag2 CalculatedWeenieHeaderFlag2()
+        private WeenieHeaderFlag2 CalculateWeenieHeaderFlag2()
         {
             var weenieHeaderFlag2 = WeenieHeaderFlag2.None;
 
@@ -789,201 +820,60 @@ namespace ACE.Server.WorldObjects
             return weenieHeaderFlag2;
         }
 
-        private ObjectDescriptionFlag CalculatedDescriptionFlag()
+        private void UpdateObjectDescriptionFlags()
         {
-            var flag = BaseDescriptionFlags;
-            var weenieFlags2 = CalculatedWeenieHeaderFlag2();
-
-
-            //if (flag.HasFlag(ObjectDescriptionFlag.Openable))
-            //    if (!Open.HasValue)
-            //        Open = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.Inscribable))
-                if (!Inscribable.HasValue)
-                    Inscribable = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.Stuck))
-                if (!Stuck.HasValue)
-                    Stuck = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.Attackable))
-                if (!Attackable.HasValue)
-                    Attackable = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.HiddenAdmin))
-                if (!HiddenAdmin.HasValue)
-                    HiddenAdmin = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.UiHidden))
-                if (!UiHidden.HasValue)
-                    UiHidden = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.ImmuneCellRestrictions))
-                if (!IgnoreHouseBarriers.HasValue)
-                    IgnoreHouseBarriers = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.RequiresPackSlot))
-                if (!RequiresBackpackSlot.HasValue)
-                    RequiresBackpackSlot = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.Retained))
-                if (!Retained.HasValue)
-                    Retained = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.WieldOnUse))
-                if (!WieldOnUse.HasValue)
-                    WieldOnUse = true;
-            if (flag.HasFlag(ObjectDescriptionFlag.WieldLeft))
-                if (!AutowieldLeft.HasValue)
-                    AutowieldLeft = true;
-
-            // TODO: More uncommenting and wiring up for other flags
-            ////None                   = 0x00000000,
-            ////Openable               = 0x00000001,
-            if (WeenieType == WeenieType.Container || WeenieType == WeenieType.Corpse || WeenieType == WeenieType.Chest || WeenieType == WeenieType.Hook || WeenieType == WeenieType.Storage)
+            if (WeenieType == WeenieType.Container || WeenieType == WeenieType.Corpse || WeenieType == WeenieType.Chest
+                || WeenieType == WeenieType.Hook || WeenieType == WeenieType.Storage)
             {
-                if ((!IsLocked && !IsOpen) || (WeenieType == WeenieType.Hook || WeenieType == WeenieType.Storage))
-                    flag |= ObjectDescriptionFlag.Openable;
-                else
-                    flag &= ~ObjectDescriptionFlag.Openable;
+                UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Openable, !IsLocked);
             }
-            ////Inscribable            = 0x00000002,
-            if (Inscribable ?? false)
-                flag |= ObjectDescriptionFlag.Inscribable;
-            else
-                flag &= ~ObjectDescriptionFlag.Inscribable;
-            ////Stuck                  = 0x00000004,
-            if (Stuck ?? false)
-                flag |= ObjectDescriptionFlag.Stuck;
-            else
-                flag &= ~ObjectDescriptionFlag.Stuck;
-            ////Player                 = 0x00000008,
+
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Inscribable, Inscribable);
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Stuck, Stuck);
+
             if (WeenieType == WeenieType.Admin || WeenieType == WeenieType.Sentinel)
-            {
-                if ((CloakStatus ?? ACE.Entity.Enum.CloakStatus.Undef) < ACE.Entity.Enum.CloakStatus.Creature)
-                    flag |= ObjectDescriptionFlag.Player;
-                else
-                    flag &= ~ObjectDescriptionFlag.Player;
-            }
-            ////Attackable             = 0x00000010,
-            if (Attackable ?? false)
-                flag |= ObjectDescriptionFlag.Attackable;
-            else
-                flag &= ~ObjectDescriptionFlag.Attackable;
-            ////PlayerKiller           = 0x00000020,
-            if (PlayerKillerStatus == PlayerKillerStatus.PK)
-                flag |= ObjectDescriptionFlag.PlayerKiller;
-            else
-                flag &= ~ObjectDescriptionFlag.PlayerKiller;
-            ////HiddenAdmin            = 0x00000040,
-            if (HiddenAdmin ?? false)
-                flag |= ObjectDescriptionFlag.HiddenAdmin;
-            else
-                flag &= ~ObjectDescriptionFlag.HiddenAdmin;
-            ////UiHidden               = 0x00000080,
-            if (UiHidden ?? false)
-                flag |= ObjectDescriptionFlag.UiHidden;
-            else
-                flag &= ~ObjectDescriptionFlag.UiHidden;
-            ////Book                   = 0x00000100,
-            // if (AceObject.Book ?? false)
-            //    Book = true;
-            ////Vendor                 = 0x00000200,
-            // if (AceObject.Vendor ?? false)
-            //    Vendor = true;
-            ////PkSwitch               = 0x00000400,
-            // if (AceObject.PkSwitch ?? false)
-            //    PkSwitch = true;
-            ////NpkSwitch              = 0x00000800,
-            // if (AceObject.NpkSwitch ?? false)
-            //    NpkSwitch = true;
-            ////Door                   = 0x00001000,
-            // if (AceObject.Door ?? false)
-            //    Door = true;
-            ////Corpse                 = 0x00002000,
-            // if (AceObject.Corpse ?? false)
-            //    Corpse = true;
-            ////LifeStone              = 0x00004000,
-            // if (AceObject.LifeStone ?? false)
-            //    LifeStone = true;
-            ////Food                   = 0x00008000,
-            // if (AceObject.Food ?? false)
-            //    Food = true;
-            ////Healer                 = 0x00010000,
-            // if (AceObject.Healer ?? false)
-            //    Healer = true;
-            ////Lockpick               = 0x00020000,
-            // if (AceObject.Lockpick ?? false)
-            //    Lockpick = true;
-            ////Portal                 = 0x00040000,
-            // if (AceObject.Portal ?? false)
-            //    Portal = true;
-            ////Admin                  = 0x00100000,
+                UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Player, CloakStatus < CloakStatus.Creature);
+
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Attackable, Attackable);
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.PlayerKiller, PlayerKillerStatus == PlayerKillerStatus.PK);
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.HiddenAdmin, HiddenAdmin);
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.UiHidden, UiHidden);
+
             if (WeenieType == WeenieType.Admin || WeenieType == WeenieType.Sentinel)
-            {
-                if ((CloakStatus ?? ACE.Entity.Enum.CloakStatus.Undef) < ACE.Entity.Enum.CloakStatus.Player)
-                    flag |= ObjectDescriptionFlag.Admin;
-                else
-                    flag &= ~ObjectDescriptionFlag.Admin;
-            }
-            ////FreePkStatus           = 0x00200000,
-            if (PlayerKillerStatus == PlayerKillerStatus.Free)
-                flag |= ObjectDescriptionFlag.FreePkStatus;
-            else
-                flag &= ~ObjectDescriptionFlag.FreePkStatus;
-            ////ImmuneCellRestrictions = 0x00400000,
-            if (IgnoreHouseBarriers ?? false)
-                flag |= ObjectDescriptionFlag.ImmuneCellRestrictions;
-            else
-                flag &= ~ObjectDescriptionFlag.ImmuneCellRestrictions;
-            ////RequiresPackSlot       = 0x00800000,
-            if (RequiresBackpackSlot ?? false)
-                flag |= ObjectDescriptionFlag.RequiresPackSlot;
-            else
-                flag &= ~ObjectDescriptionFlag.RequiresPackSlot;
-            ////Retained               = 0x01000000,
-            if (Retained ?? false)
-                flag |= ObjectDescriptionFlag.Retained;
-            else
-                flag &= ~ObjectDescriptionFlag.Retained;
-            ////PkLiteStatus           = 0x02000000,
-            if (PlayerKillerStatus == PlayerKillerStatus.PKLite)
-                flag |= ObjectDescriptionFlag.PkLiteStatus;
-            else
-                flag &= ~ObjectDescriptionFlag.PkLiteStatus;
-            ////IncludesSecondHeader   = 0x04000000,
-            if (weenieFlags2 > WeenieHeaderFlag2.None)
-                flag |= ObjectDescriptionFlag.IncludesSecondHeader;
-            else
-                flag &= ~ObjectDescriptionFlag.IncludesSecondHeader;
-            ////BindStone              = 0x08000000,
-            // if (AceObject.BindStone ?? false)
-            //    BindStone = true;
-            ////VolatileRare           = 0x10000000,
-            // if (AceObject.VolatileRare ?? false)
-            //    VolatileRare = true;
-            ////WieldOnUse             = 0x20000000,
-            if (WieldOnUse ?? false)
-                flag |= ObjectDescriptionFlag.WieldOnUse;
-            else
-                flag &= ~ObjectDescriptionFlag.WieldOnUse;
-            ////WieldLeft              = 0x40000000,
-            if (AutowieldLeft ?? false)
-                flag |= ObjectDescriptionFlag.WieldLeft;
-            else
-                flag &= ~ObjectDescriptionFlag.WieldLeft;
+                UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Admin, CloakStatus < CloakStatus.Player);
 
-            return flag;
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.FreePkStatus, PlayerKillerStatus == PlayerKillerStatus.Free);
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.ImmuneCellRestrictions, IgnoreHouseBarriers);
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.RequiresPackSlot, RequiresPackSlot);
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Retained, Retained);
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.PkLiteStatus, PlayerKillerStatus == PlayerKillerStatus.PKLite);
+
+            var weenieFlags2 = CalculateWeenieHeaderFlag2();
+
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.IncludesSecondHeader, weenieFlags2 > WeenieHeaderFlag2.None);
+
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.WieldOnUse, WieldOnUse);
+            UpdateObjectDescriptionFlag(ObjectDescriptionFlag.WieldLeft, WieldLeft);
         }
 
-        public void ClearRequestedPositions()
+        private void UpdateObjectDescriptionFlag(ObjectDescriptionFlag flag, bool value)
         {
-            ForcedLocation = null;
-            RequestedLocation = null;
+            if (value)
+                ObjectDescriptionFlags |= flag;
+            else
+                ObjectDescriptionFlags &= ~flag;
         }
-
-        public void ClearPreviousLocation()
-        {
-            PreviousLocation = null;
-        }
-
 
         public bool? IgnoreCloIcons
         {
             get => GetProperty(PropertyBool.IgnoreCloIcons);
             set { if (!value.HasValue) RemoveProperty(PropertyBool.IgnoreCloIcons); else SetProperty(PropertyBool.IgnoreCloIcons, value.Value); }
+        }
+
+        public bool? Dyable
+        {
+            get => GetProperty(PropertyBool.Dyable);
+            set { if (!value.HasValue) RemoveProperty(PropertyBool.Dyable); else SetProperty(PropertyBool.Dyable, value.Value); }
         }
 
         public virtual ACE.Entity.ObjDesc CalculateObjDesc()
@@ -1011,10 +901,10 @@ namespace ACE.Server.WorldObjects
                 foreach (CloObjectEffect t in clothingBaseEffect.CloObjectEffects)
                 {
                     byte partNum = (byte)t.Index;
-                    objDesc.AnimPartChanges.Add(new ACE.Entity.AnimationPartChange { PartIndex = (byte)t.Index, PartID = t.ModelId });
+                    objDesc.AnimPartChanges.Add(new PropertiesAnimPart { Index = (byte)t.Index, AnimationId = t.ModelId });
                     //AddModel((byte)t.Index, (ushort)t.ModelId);
                     foreach (CloTextureEffect t1 in t.CloTextureEffects)
-                        objDesc.TextureChanges.Add(new ACE.Entity.TextureMapChange { PartIndex = (byte)t.Index, OldTexture = t1.OldTexture, NewTexture = t1.NewTexture });
+                        objDesc.TextureChanges.Add(new PropertiesTextureMap { PartIndex = (byte)t.Index, OldTexture = t1.OldTexture, NewTexture = t1.NewTexture });
                     //AddTexture((byte)t.Index, (ushort)t1.OldTexture, (ushort)t1.NewTexture);
                 }
 
@@ -1039,7 +929,7 @@ namespace ACE.Server.WorldObjects
                         itemSubPal = item.ClothingSubPalEffects[item.ClothingSubPalEffects.Keys.ElementAt(0)];
                     }
 
-                    if (itemSubPal.Icon > 0 && !(IgnoreCloIcons ?? false))
+                    if (itemSubPal.Icon > 0 && !(IgnoreCloIcons ?? false) && (Shade.HasValue || PaletteTemplate.HasValue))
                         IconId = itemSubPal.Icon;
 
                     float shade = 0;
@@ -1052,10 +942,10 @@ namespace ACE.Server.WorldObjects
 
                         for (int j = 0; j < itemSubPal.CloSubPalettes[i].Ranges.Count; j++)
                         {
-                            uint palOffset = itemSubPal.CloSubPalettes[i].Ranges[j].Offset / 8;
-                            uint numColors = itemSubPal.CloSubPalettes[i].Ranges[j].NumColors / 8;
+                            ushort palOffset = (ushort)(itemSubPal.CloSubPalettes[i].Ranges[j].Offset / 8);
+                            ushort numColors = (ushort)(itemSubPal.CloSubPalettes[i].Ranges[j].NumColors / 8);
                             if (PaletteTemplate.HasValue || Shade.HasValue)
-                                objDesc.SubPalettes.Add(new ACE.Entity.SubPalette { SubID = itemPal, Offset = palOffset, NumColors = numColors });
+                                objDesc.SubPalettes.Add(new PropertiesPalette { SubPaletteId = itemPal, Offset = palOffset, Length = numColors });
                             //AddPalette(itemPal, (ushort)palOffset, (ushort)numColors);
                         }
                     }
@@ -1068,14 +958,37 @@ namespace ACE.Server.WorldObjects
         protected void AddBaseModelData(ACE.Entity.ObjDesc objDesc)
         {
             // Hair/head
-            if (HeadObjectDID.HasValue)
-                objDesc.AnimPartChanges.Add(new ACE.Entity.AnimationPartChange { PartIndex = 0x10, PartID = HeadObjectDID.Value });
-            //AddModel(0x10, HeadObjectDID.Value);
+
+            // if (HeadObjectDID.HasValue && !HairStyle.HasValue)
+            // This Heritage check has been added for backwards compatibility. It works around the butthead Gear Knights appearance.
+            if (HeadObjectDID.HasValue && !HairStyle.HasValue && Heritage.HasValue && Heritage != (int)HeritageGroup.Gearknight)
+                objDesc.AnimPartChanges.Add(new PropertiesAnimPart { Index = 0x10, AnimationId = HeadObjectDID.Value });
+            else if (HairStyle.HasValue && Heritage.HasValue && Gender.HasValue)
+            {
+                // This indicates we have a Gear Knight or Olthoi(that is, player types treat "hairstyle" as a "Body Style")
+
+                // Load the CharGen data. It has all the anim & texture changes for the Body Style defined within it
+                var cg = DatManager.PortalDat.CharGen;
+                SexCG sex = cg.HeritageGroups[(uint)Heritage].Genders[(int)Gender];
+                if (sex.HairStyleList.Count > (int)HairStyle) // just check for a valid entry...
+                {
+                    HairStyleCG hairstyle = sex.HairStyleList[(int)HairStyle];
+
+                    // Add all the texture changes
+                    foreach (var tm in hairstyle.ObjDesc.TextureChanges)
+                        objDesc.TextureChanges.Add(new PropertiesTextureMap { PartIndex = tm.PartIndex, OldTexture = tm.OldTexture, NewTexture = tm.NewTexture });
+
+                    // Add all the animation part changes
+                    foreach (var part in hairstyle.ObjDesc.AnimPartChanges)
+                        objDesc.AnimPartChanges.Add(new PropertiesAnimPart { Index = part.PartIndex, AnimationId = part.PartID });
+                }
+            }
+
             if (this is Player player)
-                objDesc.TextureChanges.Add(new ACE.Entity.TextureMapChange { PartIndex = 0x10, OldTexture = player.Character.DefaultHairTexture, NewTexture = player.Character.HairTexture });
+                objDesc.TextureChanges.Add(new PropertiesTextureMap { PartIndex = 0x10, OldTexture = player.Character.DefaultHairTexture, NewTexture = player.Character.HairTexture });
             //AddTexture(0x10, DefaultHairTextureDID.Value, HairTextureDID.Value);
             if (HairPaletteDID.HasValue)
-                objDesc.SubPalettes.Add(new ACE.Entity.SubPalette { SubID = HairPaletteDID.Value, Offset = 0x18, NumColors = 0x8 });
+                objDesc.SubPalettes.Add(new PropertiesPalette { SubPaletteId = HairPaletteDID.Value, Offset = 0x18, Length = 0x8 });
             //AddPalette(HairPaletteDID.Value, 0x18, 0x8);
 
             // Skin
@@ -1083,23 +996,23 @@ namespace ACE.Server.WorldObjects
             if (PaletteBaseDID.HasValue)
                 objDesc.PaletteID = PaletteBaseDID.Value;
             if (SkinPaletteDID.HasValue)
-                objDesc.SubPalettes.Add(new ACE.Entity.SubPalette { SubID = SkinPaletteDID.Value, Offset = 0x0, NumColors = 0x18 });
+                objDesc.SubPalettes.Add(new PropertiesPalette { SubPaletteId = SkinPaletteDID.Value, Offset = 0x0, Length = 0x18 });
             //AddPalette(SkinPalette.Value, 0x0, 0x18);
 
             // Eyes
             if (DefaultEyesTextureDID.HasValue && EyesTextureDID.HasValue)
-                objDesc.TextureChanges.Add(new ACE.Entity.TextureMapChange { PartIndex = 0x10, OldTexture = DefaultEyesTextureDID.Value, NewTexture = EyesTextureDID.Value });
+                objDesc.TextureChanges.Add(new PropertiesTextureMap { PartIndex = 0x10, OldTexture = DefaultEyesTextureDID.Value, NewTexture = EyesTextureDID.Value });
             //AddTexture(0x10, DefaultEyesTextureDID.Value, EyesTextureDID.Value);
             if (EyesPaletteDID.HasValue)
-                objDesc.SubPalettes.Add(new ACE.Entity.SubPalette { SubID = EyesPaletteDID.Value, Offset = 0x20, NumColors = 0x8 });
+                objDesc.SubPalettes.Add(new PropertiesPalette { SubPaletteId = EyesPaletteDID.Value, Offset = 0x20, Length = 0x8 });
             //AddPalette(EyesPaletteDID.Value, 0x20, 0x8);
 
             // Nose & Mouth
             if (DefaultNoseTextureDID.HasValue && NoseTextureDID.HasValue)
-                objDesc.TextureChanges.Add(new ACE.Entity.TextureMapChange { PartIndex = 0x10, OldTexture = DefaultNoseTextureDID.Value, NewTexture = NoseTextureDID.Value });
+                objDesc.TextureChanges.Add(new PropertiesTextureMap { PartIndex = 0x10, OldTexture = DefaultNoseTextureDID.Value, NewTexture = NoseTextureDID.Value });
             //AddTexture(0x10, NoseTextureDID.Value, NoseTextureDID.Value);
             if (DefaultMouthTextureDID.HasValue && MouthTextureDID.HasValue)
-                objDesc.TextureChanges.Add(new ACE.Entity.TextureMapChange { PartIndex = 0x10, OldTexture = DefaultMouthTextureDID.Value, NewTexture = MouthTextureDID.Value });
+                objDesc.TextureChanges.Add(new PropertiesTextureMap { PartIndex = 0x10, OldTexture = DefaultMouthTextureDID.Value, NewTexture = MouthTextureDID.Value });
             //AddTexture(0x10, DefaultMouthTextureDID.Value, MouthTextureDID.Value);
         }
 
@@ -1113,7 +1026,7 @@ namespace ACE.Server.WorldObjects
             if (!excludeSelf && this is Player self)
                 self.EnqueueAction(new ActionEventDelegate(() => delegateAction(self)));
 
-            foreach (var player in PhysicsObj.ObjMaint.VoyeurTable.Values.Select(v => (Player)v.WeenieObj.WorldObject))
+            foreach (var player in PhysicsObj.ObjMaint.GetKnownPlayersValuesAsPlayer())
             {
                 if (Visibility && !player.Adminvision)
                     continue;
@@ -1142,35 +1055,180 @@ namespace ACE.Server.WorldObjects
             return iterator.CurrentLandblock == null ? null : iterator;
         }
 
-        public float EnqueueMotion(ActionChain actionChain, MotionCommand motionCommand, float speed = 1.0f, bool useStance = true)
+        public float EnqueueMotionMagic(ActionChain actionChain, MotionCommand motionCommand, float speed = 1.0f)
+        {
+            var motion = new Motion(MotionStance.Magic, motionCommand, speed);
+            motion.MotionState.TurnSpeed = 2.25f;  // ??
+
+            var animLength = Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, MotionStance.Magic, motionCommand, speed);
+
+            actionChain.AddAction(this, () =>
+            {
+                if (this is Player player && player.MagicState.IsCasting)
+                    EnqueueBroadcastMotion(motion);
+            });
+            actionChain.AddDelaySeconds(animLength);
+
+            return animLength;
+        }
+
+        public float EnqueueMotion(ActionChain actionChain, MotionCommand motionCommand, float speed = 1.0f, bool useStance = true, MotionCommand? prevCommand = null, bool castGesture = false, bool half = false)
         {
             var stance = CurrentMotionState != null && useStance ? CurrentMotionState.Stance : MotionStance.NonCombat;
+
+            if (castGesture)
+                stance = MotionStance.Magic;
 
             var motion = new Motion(stance, motionCommand, speed);
             motion.MotionState.TurnSpeed = 2.25f;  // ??
 
-            var animLength = Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, stance, motionCommand);
+            var animLength = 0.0f;
+            if (prevCommand != null)
+            {
+                animLength = Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, stance, prevCommand.Value, motionCommand, speed);
+            }
+            else
+                animLength = Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, stance, motionCommand, speed);
 
             actionChain.AddAction(this, () =>
             {
+                if (castGesture && this is Player player && !player.MagicState.IsCasting)
+                    return;
+
                 CurrentMotionState = motion;
                 EnqueueBroadcastMotion(motion);
             });
 
+            if (half)
+                animLength *= 0.5f;
+
             actionChain.AddDelaySeconds(animLength);
+
             return animLength;
         }
+
+        public float EnqueueMotionAction(ActionChain actionChain, List<MotionCommand> motionCommands, float speed = 1.0f, MotionStance? useStance = null, bool usePrevCommand = false)
+        {
+            var stance = useStance ?? CurrentMotionState.Stance;
+
+            var motion = new Motion(stance, MotionCommand.Ready, speed);
+
+            foreach (var motionCommand in motionCommands)
+                motion.MotionState.AddCommand(this, motionCommand, speed);
+
+            motion.MotionState.TurnSpeed = 2.25f;  // ??
+
+            var animLength = 0.0f;
+            if (usePrevCommand)
+            {
+                var prevCommand = CurrentMotionState.MotionState.ForwardCommand;
+
+                foreach (var motionCommand in motionCommands)
+                    animLength += Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, stance, prevCommand, motionCommand, speed);
+            }
+            else
+            {
+                foreach (var motionCommand in motionCommands)
+                    animLength += Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, stance, motionCommand, speed);
+            }
+
+            actionChain.AddAction(this, () =>
+            {
+                CurrentMotionState = motion;
+                EnqueueBroadcastMotion(motion, null, false);
+
+                ApplyPhysicsMotion(new Motion(stance, MotionCommand.Ready, speed));
+
+                foreach (var motionCommand in motionCommands)
+                    ApplyPhysicsMotion(new Motion(stance, motionCommand, speed));
+            });
+
+            actionChain.AddDelaySeconds(animLength);
+
+            return animLength;
+        }
+
+        public float EnqueueMotion_Force(ActionChain actionChain, MotionStance stance, MotionCommand motionCommand, MotionCommand? prevCommand = null, float speed = 1.0f, float animMod = 1.0f)
+        {
+            var motion = new Motion(stance, motionCommand, speed);
+
+            var animLength = 0.0f;
+
+            if (prevCommand == null)
+                animLength = Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, stance, motionCommand, speed);
+            else
+            {
+                var isStance = Enum.IsDefined(typeof(MotionStance), (uint)prevCommand);
+
+                if (isStance)
+                    animLength = Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, (MotionStance)prevCommand, motionCommand, (MotionCommand)stance, speed);
+                else
+                    animLength = Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, stance, prevCommand.Value, motionCommand, speed);
+            }
+
+            actionChain.AddAction(this, () =>
+            {
+                CurrentMotionState = motion;
+
+                EnqueueBroadcastMotion(motion);
+            });
+
+            actionChain.AddDelaySeconds(animLength * animMod);
+            return animLength;
+        }
+
+        public static bool EnqueueBroadcastMotion_Physics = true;
+
+        public void EnqueueBroadcastMotion(Motion motion, float? maxRange = null, bool? applyPhysics = null)
+        {
+            if (applyPhysics == null)
+            {
+                if (this is Player player)
+                    applyPhysics = player.FastTick;
+                else
+                    applyPhysics = false;
+            }
+
+            var msg = new GameMessageUpdateMotion(this, motion);
+
+            if (maxRange == null)
+                EnqueueBroadcast(msg);
+            else
+                EnqueueBroadcast(msg, maxRange.Value);
+
+            if (EnqueueBroadcastMotion_Physics && applyPhysics.Value)
+                ApplyPhysicsMotion(motion);
+        }
+
+        public void ApplyPhysicsMotion(Motion motion)
+        {
+            var minterp = PhysicsObj.get_minterp();
+            var rawState = minterp.RawState;
+
+            var allowJump = minterp.motion_allows_jump(minterp.InterpretedState.ForwardCommand) == WeenieError.None;
+
+            rawState.CurrentStyle = (uint)motion.Stance;
+            rawState.ForwardCommand = (uint)motion.MotionState.ForwardCommand;
+            rawState.ForwardSpeed = motion.MotionState.ForwardSpeed;
+
+            if (!PhysicsObj.IsMovingOrAnimating)
+                //PhysicsObj.UpdateTime = Physics.Common.PhysicsTimer.CurrentTime - PhysicsGlobals.MinQuantum;
+                PhysicsObj.UpdateTime = Physics.Common.PhysicsTimer.CurrentTime;
+
+            minterp.apply_raw_movement(true, allowJump);
+        }
+
 
         /// <summary>
         /// Returns TRUE if there are any players within range of this object
         /// </summary>
         public bool PlayersInRange(float range = 96.0f)
         {
-            var isDungeon = CurrentLandblock != null && CurrentLandblock._landblock != null && CurrentLandblock._landblock.IsDungeon;
+            var isDungeon = CurrentLandblock != null && CurrentLandblock.PhysicsLandblock != null && CurrentLandblock.PhysicsLandblock.IsDungeon;
 
             var rangeSquared = range * range;
 
-            foreach (var player in PhysicsObj.ObjMaint.VoyeurTable.Values.Select(v => (Player)v.WeenieObj.WorldObject))
+            foreach (var player in PhysicsObj.ObjMaint.GetKnownPlayersValuesAsPlayer())
             {
                 if (isDungeon && Location.Landblock != player.Location.Landblock)
                     continue;
@@ -1191,7 +1249,7 @@ namespace ACE.Server.WorldObjects
         /// Sends network messages to all Players who currently know about this object
         /// within a maximum range
         /// </summary>
-        public void EnqueueBroadcast(GameMessage msg, float range, bool useSquelch = false)
+        public void EnqueueBroadcast(GameMessage msg, float range, ChatMessageType? squelchType = null)
         {
             if (PhysicsObj == null || CurrentLandblock == null) return;
 
@@ -1202,13 +1260,13 @@ namespace ACE.Server.WorldObjects
                 self.Session.Network.EnqueueSend(msg);
             }
 
-            var isDungeon = CurrentLandblock._landblock != null && CurrentLandblock._landblock.IsDungeon;
+            var isDungeon = CurrentLandblock.PhysicsLandblock != null && CurrentLandblock.PhysicsLandblock.IsDungeon;
 
             var rangeSquared = range * range;
 
-            foreach (var player in PhysicsObj.ObjMaint.VoyeurTable.Values.Select(v => (Player)v.WeenieObj.WorldObject))
+            foreach (var player in PhysicsObj.ObjMaint.GetKnownPlayersValuesAsPlayer())
             {
-                if (self != null && useSquelch && player.Squelches.Contains(self))
+                if (self != null && squelchType != null && player.SquelchManager.Squelches.Contains(self, squelchType.Value))
                     continue;
 
                 if (isDungeon && Location.Landblock != player.Location.Landblock)
@@ -1243,7 +1301,7 @@ namespace ACE.Server.WorldObjects
                     self.Session.Network.EnqueueSend(msgs);
             }
 
-            var nearbyPlayers = PhysicsObj.ObjMaint.VoyeurTable.Values.Select(v => (Player)v.WeenieObj.WorldObject).ToList();
+            var nearbyPlayers = PhysicsObj.ObjMaint.GetKnownPlayersValuesAsPlayer();
             foreach (var player in nearbyPlayers)
             {
                 if (Visibility && !player.Adminvision)
@@ -1264,7 +1322,7 @@ namespace ACE.Server.WorldObjects
                     self.Session.Network.EnqueueSend(msgs);
             }
 
-            var nearbyPlayers = PhysicsObj.ObjMaint.VoyeurTable.Values.Select(v => (Player)v.WeenieObj.WorldObject).ToList();
+            var nearbyPlayers = PhysicsObj.ObjMaint.GetKnownPlayersValuesAsPlayer();
             foreach (var player in nearbyPlayers.Except(excludePlayers))
             {
                 if (Visibility && !player.Adminvision)
@@ -1280,17 +1338,12 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public void NotifyPlayers()
         {
-            // build a list of all players within visible range
-            PhysicsObj.get_voyeurs();
-
-            //Console.WriteLine($"{Name}: NotifyPlayers - found {PhysicsObj.ObjMaint.VoyeurTable.Count} players");
-
-            // add to player tracking / send create object network messages to these players
-            foreach (var player in PhysicsObj.ObjMaint.VoyeurTable.Values.Select(v => (Player)v.WeenieObj.WorldObject))
+            // send create object network message to visible players
+            foreach (var player in PhysicsObj.ObjMaint.GetKnownPlayersValuesAsPlayer())
                 player.AddTrackedObject(this);
 
             if (this is Creature creature && !(this is Player))
-                creature.CheckPlayers();
+                creature.CheckTargets();
         }
     }
 }

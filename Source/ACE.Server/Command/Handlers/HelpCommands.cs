@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 using ACE.Entity.Enum;
 using ACE.Server.Network;
@@ -17,12 +18,13 @@ namespace ACE.Server.Command.Handlers
             {
                 if (session != null)
                 {
-                    session.Network.EnqueueSend(new GameMessageSystemChat("Note: You may substitute a forward slash (/) for the at symbol (@).", ChatMessageType.Broadcast));
-                    session.Network.EnqueueSend(new GameMessageSystemChat("Use @help to get more information about commands supported by the client.", ChatMessageType.Broadcast));
-                    session.Network.EnqueueSend(new GameMessageSystemChat("Available help:", ChatMessageType.Broadcast));
-                    session.Network.EnqueueSend(new GameMessageSystemChat("@acehelp commands - Lists all commands.", ChatMessageType.Broadcast));
-                    session.Network.EnqueueSend(new GameMessageSystemChat("You can also use @acecommands to get a complete list of the supported ACEmulator commands available to you.", ChatMessageType.Broadcast));
-                    session.Network.EnqueueSend(new GameMessageSystemChat("To get more information about a specific command, use @acehelp command", ChatMessageType.Broadcast));
+                    var msg = "Note: You may substitute a forward slash (/) for the at symbol (@).\n"
+                            + "Use @help to get more information about commands supported by the client.\n"
+                            + "Available help:\n"
+                            + "@acehelp commands - Lists all commands.\n"
+                            + "You can also use @acecommands to get a complete list of the supported ACEmulator commands available to you.\n"
+                            + "To get more information about a specific command, use @acehelp command\n";
+                    session.Network.EnqueueSend(new GameMessageSystemChat(msg, ChatMessageType.Broadcast));
                 }
 
                 return;
@@ -42,8 +44,11 @@ namespace ACE.Server.Command.Handlers
                         continue;
                     if (session.AccessLevel < command.Attribute.Access)
                         continue;
-                    session.Network.EnqueueSend(new GameMessageSystemChat($"@{command.Attribute.Command} - {command.Attribute.Description}", ChatMessageType.Broadcast));
-                    session.Network.EnqueueSend(new GameMessageSystemChat($"Usage: @{command.Attribute.Command} {command.Attribute.Usage}", ChatMessageType.Broadcast));
+
+                    var msg = $"@{command.Attribute.Command} - {command.Attribute.Description}\n"
+                            + $"Usage: @{command.Attribute.Command} {command.Attribute.Usage}\n";
+
+                    session.Network.EnqueueSend(new GameMessageSystemChat(msg, ChatMessageType.Broadcast));
 
                     return;
                 }
@@ -58,58 +63,62 @@ namespace ACE.Server.Command.Handlers
 
             if (session != null)
             {
-                session.Network.EnqueueSend(new GameMessageSystemChat($"Unknown command: {parameters[0]}", ChatMessageType.Help));
-                session.Network.EnqueueSend(new GameMessageSystemChat("Use @acecommands to get a complete list of commands available for you to use.", ChatMessageType.Broadcast));
-                session.Network.EnqueueSend(new GameMessageSystemChat("To get more information about a specific command, use @acehelp command", ChatMessageType.Broadcast));
+                var msg = "Use @acecommands to get a complete list of commands available for you to use.\n"
+                        + "To get more information about a specific command, use @acehelp command\n";
+
+                session.Network.EnqueueSend(new GameMessageSystemChat($"Unknown command: {parameters[0]}", ChatMessageType.Help),
+                                            new Network.GameEvent.Events.GameEventWeenieError(session, WeenieError.ThatIsNotAValidCommand),
+                                            new GameMessageSystemChat(msg, ChatMessageType.Broadcast));
             }
             else
                 Console.WriteLine($"Unknown command: {parameters[0]}");
         }
 
         // acecommands
-        [CommandHandler("acecommands", AccessLevel.Player, CommandHandlerFlag.None, 0, "Lists all commands.")]
+        [CommandHandler("acecommands", AccessLevel.Player, CommandHandlerFlag.None, 0, "Lists all commands.", "<access level or search>")]
         public static void HandleACECommands(Session session, params string[] parameters)
         {
-            List<String> commandList = new List<string>();
+            var commandList = new List<string>();
 
-            if (session != null)
-            {
-                session.Network.EnqueueSend(new GameMessageSystemChat("Note: You may substitute a forward slash (/) for the at symbol (@).", ChatMessageType.Broadcast));
-                session.Network.EnqueueSend(new GameMessageSystemChat("For more information, type @acehelp < command >.", ChatMessageType.Broadcast));
-            }
-            else
+            var msgHeader = "Note: You may substitute a forward slash (/) for the at symbol (@).\n"
+                          + "For more information, type @acehelp < command >.\n";
+
+            if (session == null)            
                 Console.WriteLine("For more information, type acehelp < command >.");
 
-            foreach (var command in CommandManager.GetCommands())
-            {
-                if (session != null)
-                {
-                    if (command.Attribute.Flags == CommandHandlerFlag.ConsoleInvoke) // Skip Console Commands
-                        continue;
-                    if (session.AccessLevel < command.Attribute.Access) // Skip Commands which are higher than your current access level
-                        continue;
+            var accessLevel = session != null ? session.AccessLevel : AccessLevel.Admin;
+            var exact = false;
+            string search = null;
 
-                    commandList.Add(string.Format("@{0} - {1}", command.Attribute.Command, command.Attribute.Description));
+            if (parameters.Length > 0)
+            {
+                var param = parameters[0];
+                if (Enum.TryParse(param, true, out AccessLevel pAccessLevel) && pAccessLevel <= accessLevel)
+                {
+                    accessLevel = pAccessLevel;
+                    exact = true;
                 }
                 else
-                {
-                    if (command.Attribute.Flags == CommandHandlerFlag.RequiresWorld) // Skip Commands that only work in game
-                        continue;
-
-                    commandList.Add(string.Format("{0} - {1}", command.Attribute.Command, command.Attribute.Description));
-                }
+                    search = param;
             }
 
-            commandList.Sort();
+            var restrict = session != null ? CommandHandlerFlag.ConsoleInvoke : CommandHandlerFlag.RequiresWorld;
 
-            for (int i = 0; i < commandList.Count; i++)
-            {
-                string message = commandList[i];
-                if (session != null)
-                    session.Network.EnqueueSend(new GameMessageSystemChat(message, ChatMessageType.Broadcast));
-                else
-                    Console.WriteLine(message);
-            }
+            var commands = from cmd in CommandManager.GetCommands()
+                           where (exact ? cmd.Attribute.Access == accessLevel : cmd.Attribute.Access <= accessLevel) && cmd.Attribute.Flags != restrict
+                           && (search != null ? $"{cmd.Attribute.Access} {cmd.Attribute.Command} {cmd.Attribute.Description}".Contains(search, StringComparison.OrdinalIgnoreCase) : true)
+                           orderby cmd.Attribute.Command
+                           select cmd;
+
+            foreach (var command in commands)
+                commandList.Add(string.Format("@{0} - {1}", command.Attribute.Command, command.Attribute.Description));
+
+            var msg = string.Join("\n", commandList);
+
+            if (session != null)
+                session.Network.EnqueueSend(new GameMessageSystemChat(msgHeader + msg, ChatMessageType.Broadcast));
+            else
+                Console.WriteLine(msg);
         }
     }
 }

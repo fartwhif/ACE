@@ -1,4 +1,8 @@
 using System;
+using System.Linq;
+
+using ACE.Entity.Enum;
+using ACE.Entity.Enum.Properties;
 
 namespace ACE.Server.WorldObjects
 {
@@ -23,7 +27,7 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public static float GetPositiveRatingMod(int rating)
         {
-            if (rating < 0) return GetNegativeRatingMod(rating);
+            if (rating < 0) return GetNegativeRatingMod(-rating);
 
             // formula: (100 + rating) / 100 = 1.xx modifier
             var ratingMod = (100 + rating) / 100.0f;
@@ -36,7 +40,7 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public static float GetNegativeRatingMod(int rating)
         {
-            if (rating < 0) return GetPositiveRatingMod(rating);
+            if (rating < 0) return GetPositiveRatingMod(-rating);
 
             // formula: 100 / (100 + rating) = 0.xx modifier
             var ratingMod = 100.0f / (100 + rating);
@@ -180,6 +184,295 @@ namespace ACE.Server.WorldObjects
                 totalRating += ModToRating(mod);
 
             return GetRatingMod(totalRating);
+        }
+
+        public int GetDamageRating()
+        {
+            // get from base properties (monsters)?
+            var damageRating = DamageRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.DamageRating);
+
+            // equipment ratings
+            // TODO: caching?
+            var equipment = EquippedObjects.Values.Sum(i => i.DamageRating ?? 0);
+
+            // weakness as negative damage rating?
+            // TODO: this should be factored in as a separate weakness rating...
+            var weaknessRating = EnchantmentManager.GetRating(PropertyInt.WeaknessRating);
+
+            var augBonus = 0;
+            var lumAugBonus = 0;
+
+            if (this is Player player)
+            {
+                augBonus = player.AugmentationDamageBonus * 3;
+                lumAugBonus = player.LumAugDamageRating;
+            }
+
+            // heritage / weapon type bonus factored in elsewhere?
+            return damageRating + equipment + enchantments - weaknessRating + augBonus + lumAugBonus;
+        }
+
+        public int GetDamageResistRating(CombatType? combatType = null, bool directDamage = true)
+        {
+            // get from base properties (monsters)?
+            var damageResistRating = DamageResistRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.DamageResistRating);
+
+            // equipment ratings
+            // TODO: caching?
+            var equipment = EquippedObjects.Values.Sum(i => i.DamageResistRating ?? 0);
+
+            // nether DoTs as negative DRR?
+            // TODO: this should be factored in as a separate nether damage rating...
+            var netherDotDamageRating = directDamage ? EnchantmentManager.GetNetherDotDamageRating() : 0;
+
+            var augBonus = 0;
+            var lumAugBonus = 0;
+            var specBonus = 0;
+
+            if (this is Player player)
+            {
+                augBonus = player.AugmentationDamageReduction * 3;
+                lumAugBonus = player.LumAugDamageReductionRating;
+                specBonus = GetSpecDefenseBonus(combatType);
+            }
+
+            return damageResistRating + equipment + enchantments - netherDotDamageRating + augBonus + lumAugBonus + specBonus;
+        }
+
+        public int GetSpecDefenseBonus(CombatType? combatType)
+        {
+            // https://asheron.fandom.com/wiki/Announcements_-_2013/02_-_Balance_of_Power
+
+            // New bonus added to specialized defenses against damage of their respective attack type. (Applied in both PvE & PvP)
+
+            // - Specialized Melee Defense skill now adds 1 Damage Rating Resist for every 60 pts against melee attacks
+            // - Specialized Missile Defense skill now adds 1 Damage Rating Resist for every 50 pts against missile attacks
+            // - Specialized Magic Defense skill now adds 1 Damage Rating Resist for every 50 pts against magic attacks
+
+            // only applies to players
+            if (combatType == null || !(this is Player player))
+                return 0;
+
+            var skill = GetDefenseSkill(combatType.Value);
+            var creatureSkill = player.GetCreatureSkill(skill);
+
+            // ensure defense skill is specialized
+            if (creatureSkill.AdvancementClass != SkillAdvancementClass.Specialized)
+                return 0;
+
+            var divisor = skill == Skill.MeleeDefense ? 60 : 50;
+
+            // floor?
+            return (int)creatureSkill.Base / divisor;
+        }
+
+        public int GetCritRating()
+        {
+            // crit chance
+
+            // get from base properties (monsters)?
+            var critChanceRating = CritRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.CritRating);
+
+            // augmentations
+            var augBonus = 0;
+
+            if (this is Player player)
+                augBonus = player.AugmentationCriticalExpertise;
+
+            return critChanceRating + enchantments + augBonus;
+        }
+
+        public int GetCritDamageRating()
+        {
+            // get from base properties (monsters)?
+            var critDamageRating = CritDamageRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.CritDamageRating);
+
+            // equipment ratings
+            // TODO: caching?
+            var equipment = EquippedObjects.Values.Sum(i => i.CritDamageRating ?? 0);
+
+            // augmentations
+            var augBonus = 0;
+            var lumAugBonus = 0;
+
+            if (this is Player player)
+            {
+                augBonus = player.AugmentationCriticalPower * 3;
+                lumAugBonus = player.LumAugCritDamageRating;
+            }
+
+            return critDamageRating + equipment + enchantments + augBonus + lumAugBonus;
+        }
+
+        public int GetCritResistRating()
+        {
+            // crit resist chance
+
+            // get from base properties (monsters)?
+            var critResistRating = CritResistRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.CritResistRating);
+
+            // no augs / lum augs?
+            return critResistRating + enchantments;
+        }
+
+        public int GetCritDamageResistRating()
+        {
+            // get from base properties (monsters)?
+            var critDamageResistRating = CritDamageResistRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.CritDamageResistRating);
+
+            // equipment ratings
+            // TODO: caching?
+            var equipment = EquippedObjects.Values.Sum(i => i.CritDamageResistRating ?? 0);
+
+            var lumAugBonus = 0;
+            if (this is Player player)
+                lumAugBonus = player.LumAugCritReductionRating;
+
+            return critDamageResistRating + equipment + enchantments + lumAugBonus;
+        }
+
+        public int GetHealingBoostRating()
+        {
+            // get from base properties (monsters)?
+            var healBoostRating = HealingBoostRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.HealingBoostRating);
+
+            var lumAugBonus = 0;
+            if (this is Player player)
+                lumAugBonus = player.LumAugHealingRating;
+
+            return healBoostRating + enchantments + lumAugBonus;
+        }
+
+        public int GetHealingResistRating()
+        {
+            // debuff?
+            var healResistRating = HealingResistRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.HealingResistRating);
+
+            return healResistRating + enchantments;
+        }
+
+        public float GetHealingRatingMod()
+        {
+            var boostMod = GetPositiveRatingMod(GetHealingBoostRating());
+            var resistMod = GetNegativeRatingMod(GetHealingResistRating());
+
+            return boostMod * resistMod;
+        }
+
+        public int GetLifeResistRating()
+        {
+            // only affects health drain?
+            // only cast by Sigil of Perserverance (Aetheria)?
+
+            // get from base properties (monsters)?
+            var lifeResistRating = LifeResistRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.LifeResistRating);
+
+            return lifeResistRating + enchantments;
+        }
+
+        public float GetLifeResistRatingMod()
+        {
+            return GetNegativeRatingMod(GetLifeResistRating());
+        }
+
+        public int GetDotResistanceRating()
+        {
+            // get from base properties (monsters)?
+            var dotResistRating = DotResistRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.DotResistRating);
+
+            return dotResistRating + enchantments;
+        }
+
+        public int GetNetherResistRating()
+        {
+            // there is a property defined for this,
+            // but does anything use this?
+
+            // get from base properties (monsters)?
+            var netherResistRating = NetherResistRating ?? 0;
+
+            // additive enchantments
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.NetherResistRating);
+
+            return netherResistRating + enchantments;
+        }
+
+        public int GetGearMaxHealth()
+        {
+            // ??
+            return 0;
+        }
+
+        public int GetPKDamageRating()
+        {
+            var pkDamageRating = PKDamageRating ?? 0;
+
+            // additive enchantments?
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.PKDamageRating);
+
+            return pkDamageRating + enchantments;
+        }
+
+        public int GetPKDamageResistRating()
+        {
+            var pkDamageResistRating = PKDamageResistRating ?? 0;
+
+            // additive enchantments?
+            var enchantments = EnchantmentManager.GetRating(PropertyInt.PKDamageResistRating);
+
+            return pkDamageResistRating + enchantments;
+        }
+
+        public int GetItemManaReductionRating()
+        {
+            // only comes from luminance aug?
+            var lumAugBonus = 0;
+
+            if (this is Player player)
+                lumAugBonus = player.LumAugItemManaUsage;
+
+            return lumAugBonus;
+        }
+
+        public int GetManaChargeRating()
+        {
+            // only comes from luminance aug?
+            var lumAugBonus = 0;
+
+            if (this is Player player)
+                lumAugBonus = player.LumAugItemManaGain;
+
+            return lumAugBonus;
         }
     }
 }

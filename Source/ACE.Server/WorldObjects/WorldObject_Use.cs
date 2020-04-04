@@ -1,9 +1,9 @@
 using System;
-using ACE.Common;
-using ACE.Server.Entity;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Server.Entity;
+using ACE.Server.Managers;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
 
@@ -11,11 +11,16 @@ namespace ACE.Server.WorldObjects
 {
     partial class WorldObject
     {
-        private double? useTimestamp;
         protected double? UseTimestamp
         {
-            get { return useTimestamp; }
-            set => useTimestamp = Time.GetUnixTime();
+            get => GetProperty(PropertyFloat.UseTimestamp);
+            set { if (!value.HasValue) RemoveProperty(PropertyFloat.UseTimestamp); else SetProperty(PropertyFloat.UseTimestamp, value.Value); }
+        }
+
+        protected double? ResetTimestamp
+        {
+            get => GetProperty(PropertyFloat.ResetTimestamp);
+            set { if (!value.HasValue) RemoveProperty(PropertyFloat.ResetTimestamp); else SetProperty(PropertyFloat.ResetTimestamp, value.Value); }
         }
 
         protected double? ResetInterval
@@ -24,16 +29,26 @@ namespace ACE.Server.WorldObjects
             set { if (!value.HasValue) RemoveProperty(PropertyFloat.ResetInterval); else SetProperty(PropertyFloat.ResetInterval, value.Value); }
         }
 
-        protected bool DefaultLocked { get; set; }
+        protected bool DefaultLocked
+        {
+            get => GetProperty(PropertyBool.DefaultLocked) ?? false;
+            set { if (!value) RemoveProperty(PropertyBool.DefaultLocked); else SetProperty(PropertyBool.DefaultLocked, value); }
+        }
 
-        protected bool DefaultOpen { get; set; }
+        protected bool DefaultOpen
+        {
+            get => GetProperty(PropertyBool.DefaultOpen) ?? false;
+            set { if (!value) RemoveProperty(PropertyBool.DefaultOpen); else SetProperty(PropertyBool.DefaultOpen, value); }
+        }
 
         /// <summary>
         /// Used to determine how close you need to be to use an item.
         /// </summary>
-        public bool IsWithinUseRadiusOf(WorldObject wo)
+        public bool IsWithinUseRadiusOf(WorldObject wo, float? useRadius = null)
         {
-            var useRadius = wo.UseRadius ?? 0.6f;
+            if (useRadius == null)
+                useRadius = wo.UseRadius ?? 0.6f;
+
             var cylDist = GetCylinderDistance(wo);
 
             return cylDist <= useRadius;
@@ -45,12 +60,20 @@ namespace ACE.Server.WorldObjects
                 wo.PhysicsObj.GetRadius(), wo.PhysicsObj.GetHeight(), wo.PhysicsObj.Position);
         }
 
+        /// <summary>
+        /// Handles the 'GameAction 0x35 - UseWithTarget' network message
+        /// on a per-object type basis.
+        public virtual void HandleActionUseOnTarget(Player player, WorldObject target)
+        {
+            RecipeManager.UseObjectOnTarget(player, this, target);
+        }
+
         public virtual void OnActivate(WorldObject activator)
         {
             //Console.WriteLine($"{Name}.OnActivate({activator.Name})");
 
-            // when players double click an object in the 3d world,
-            // and the packet comes in as GameAction 0x35 - UseWithTarget
+            // when players double click an object,
+            // and the packet comes in as GameAction 0x36 - UseItem
             // from the game perspective, technically this starts as an 'Activate',
             // which can have a list of possible ActivationResponses - 
             // Use (by far the most common), Animate, Talk, Emote, CastSpell, Generate
@@ -61,52 +84,60 @@ namespace ACE.Server.WorldObjects
             // verify use requirements
             var result = CheckUseRequirements(activator);
 
+            var player = activator as Player;
             if (!result.Success)
             {
-                if (result.Message != null && activator is Player player)
+                if (result.Message != null && player != null)
                     player.Session.Network.EnqueueSend(result.Message);
 
                 return;
             }
 
-            // find activation target
-            var target = ActivationTarget != 0 ? CurrentLandblock?.GetObject(new ObjectGuid(ActivationTarget)) : this;
-
-            // special case for creatures - redirect through emote chain?
-            if (this is Creature) target = this;
-
-            if (target == null)
-            {
-                log.Warn($"{Name}.OnActivate({activator.Name}): couldn't find activation target {ActivationTarget:X8}");
-                return;
-            }
-
-            // if ActivationTarget is another object,
-            // should this be checking the ActivationResponse of the target object?
-
-            // default use action
-            if (ActivationResponse.HasFlag(ActivationResponse.Use))
-                target.ActOnUse(activator);
+            if (player != null)
+                player.EnchantmentManager.StartCooldown(this);
 
             // perform motion animation - rarely used (only 4 instances in PY16 db)
             if (ActivationResponse.HasFlag(ActivationResponse.Animate))
-                target.OnAnimate(activator);
-
-            // send chat text - rarely used (only 8 instances in PY16 db)
-            if (ActivationResponse.HasFlag(ActivationResponse.Talk))
-                target.OnTalk(activator);
+                OnAnimate(activator);
 
             // perform activation emote
             if (ActivationResponse.HasFlag(ActivationResponse.Emote))
-                target.OnEmote(activator);
+                OnEmote(activator);
 
             // cast a spell on the player (spell traps)
             if (ActivationResponse.HasFlag(ActivationResponse.CastSpell))
-                target.OnCastSpell(activator);
+                OnCastSpell(activator);
 
             // call to generator to spawn new object
             if (ActivationResponse.HasFlag(ActivationResponse.Generate))
-                target.OnGenerate(activator);
+                OnGenerate(activator);
+
+            // default use action
+            if (ActivationResponse.HasFlag(ActivationResponse.Use))
+            {
+                if (activator is Creature creature)
+                {
+                    //target.EmoteManager.OnActivation(creature); // found a few things with Activation on them but not ActivationResponse.Emote...
+                    EmoteManager.OnUse(creature);
+                }
+
+                ActOnUse(activator);
+            }
+
+            // send chat text - rarely used (only 8 instances in PY16 db)
+            if (ActivationResponse.HasFlag(ActivationResponse.Talk))
+                OnTalk(activator);
+
+            if (!(this is Creature) && ActivationTarget > 0)
+            {
+                var activationTarget = CurrentLandblock?.GetObject(new ObjectGuid(ActivationTarget));
+                if (activationTarget != null)
+                    activationTarget.OnActivate(activator);
+                else
+                {
+                    log.Warn($"{Name}.OnActivate({activator.Name}): couldn't find activation target {ActivationTarget:X8}");
+                }
+            }
         }
 
         public virtual void ActOnUse(WorldObject activator)
@@ -144,14 +175,14 @@ namespace ACE.Server.WorldObjects
             if (SpellDID != null)
             {
                 var spell = new Spell(SpellDID.Value);
-                TryCastSpell(spell, activator);
+                TryCastSpell(spell, activator, this);
             }
         }
 
         public virtual void OnGenerate(WorldObject activator)
         {
             if (IsGenerator)
-                Generator_HeartBeat();
+                Generator_Regeneration();
         }
 
         /// <summary>
@@ -161,10 +192,8 @@ namespace ACE.Server.WorldObjects
         {
             //Console.WriteLine($"{Name}.CheckUseRequirements({activator.Name})");
 
-            if (!(activator is Player))
-                return new ActivationResult(false);
-
-            var player = activator as Player;
+            if (!(activator is Player player))
+                return new ActivationResult(true);
 
             // verify arcane lore requirement
             if (ItemDifficulty != null)
@@ -191,7 +220,11 @@ namespace ACE.Server.WorldObjects
                 var playerSkill = player.GetCreatureSkill(skill);
 
                 if (playerSkill.AdvancementClass < SkillAdvancementClass.Trained)
-                    return new ActivationResult(new GameEventWeenieErrorWithString(player.Session, WeenieErrorWithString.Your_SkillMustBeTrained, playerSkill.Skill.ToSentence()));
+                {
+                    //return new ActivationResult(new GameEventWeenieErrorWithString(player.Session, WeenieErrorWithString.Your_SkillMustBeTrained, playerSkill.Skill.ToSentence()));
+                    player.Session.Network.EnqueueSend(new GameEventCommunicationTransientString(player.Session, $"You must have {playerSkill.Skill.ToSentence()} trained to use that item's magic"));
+                    return new ActivationResult(false);
+                }
 
                 // verify skill level
                 if (UseRequiresSkillLevel != null)
@@ -226,6 +259,19 @@ namespace ACE.Server.WorldObjects
                 var playerLevel = player.Level ?? 1;
                 if (playerLevel < UseRequiresLevel.Value)
                     return new ActivationResult(new GameEventWeenieErrorWithString(player.Session, WeenieErrorWithString.YouMustBe_ToUseItemMagic, $"level {UseRequiresLevel.Value}"));
+            }
+
+            // Check for a cooldown
+            if (!player.EnchantmentManager.CheckCooldown(CooldownId))
+            {
+                // TODO: werror/string not found, find exact message
+
+                /*var cooldown = player.GetCooldown(this);
+                var timer = cooldown.GetFriendlyString();
+                player.Session.Network.EnqueueSend(new GameMessageSystemChat($"{Name} can be activated again in {timer}", ChatMessageType.Broadcast));*/
+
+                player.Session.Network.EnqueueSend(new GameEventCommunicationTransientString(player.Session, "You have used this item too recently"));
+                return new ActivationResult(false);
             }
 
             return new ActivationResult(true);

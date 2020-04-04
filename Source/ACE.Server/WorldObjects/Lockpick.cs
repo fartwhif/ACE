@@ -1,7 +1,8 @@
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
+using System;
+
 using ACE.Entity;
 using ACE.Entity.Enum;
+using ACE.Entity.Models;
 
 namespace ACE.Server.WorldObjects
 {
@@ -25,10 +26,10 @@ namespace ACE.Server.WorldObjects
 
         private void SetEphemeralValues()
         {
-            BaseDescriptionFlags |= ObjectDescriptionFlag.Lockpick;
+            ObjectDescriptionFlags |= ObjectDescriptionFlag.Lockpick;
         }
 
-        public void HandleActionUseOnTarget(Player player, WorldObject target)
+        public override void HandleActionUseOnTarget(Player player, WorldObject target)
         {
             UnlockerHelper.UseUnlocker(player, this, target);
         }

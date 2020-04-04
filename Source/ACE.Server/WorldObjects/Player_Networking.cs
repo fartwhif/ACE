@@ -1,10 +1,10 @@
-using System.Linq;
-
+using System;
 using ACE.Common;
 using ACE.Database.Models.Shard;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Server.Entity.Actions;
 using ACE.Server.Managers;
 using ACE.Server.Network.Enum;
 using ACE.Server.Network.GameEvent.Events;
@@ -19,11 +19,13 @@ namespace ACE.Server.WorldObjects
         public void PlayerEnterWorld()
         {
             PlayerManager.SwitchPlayerFromOfflineToOnline(this);
+            Teleporting = true;
 
             // Save the the LoginTimestamp
             var lastLoginTimestamp = Time.GetUnixTime();
 
-            SetProperty(PropertyInt.LoginTimestamp, (int)lastLoginTimestamp);
+            LoginTimestamp = lastLoginTimestamp;
+            LastTeleportStartTimestamp = lastLoginTimestamp;
 
             Character.LastLoginTimestamp = lastLoginTimestamp;
             Character.TotalLogins++;
@@ -31,31 +33,75 @@ namespace ACE.Server.WorldObjects
 
             Sequences.SetSequence(SequenceType.ObjectInstance, new UShortSequence((ushort)Character.TotalLogins));
 
-            HandleAugsForwardCompatibility();
+            if (BarberActive)
+                BarberActive = false;
 
             if (AllegianceNode != null)
                 AllegianceRank = (int)AllegianceNode.Rank;
             else
                 AllegianceRank = null;
 
+            if (!Account15Days)
+            {
+                var accountTimeSpan = DateTime.UtcNow - Account.CreateTime;
+                if (accountTimeSpan.TotalDays >= 15)
+                    Account15Days = true;
+            }
+
             // SendSelf will trigger the entrance into portal space
             SendSelf();
 
-            // Init the client with the chat channel ID's, and then notify the player that they've choined the associated channels.
-            var allegianceChannel = Allegiance != null ? Allegiance.Biota.Id : 0u;
+            // Update or override certain properties sent to client.
 
-            var setTurbineChatChannels = new GameEventSetTurbineChatChannels(Session, allegianceChannel);
+            // bugged: do not send this here, or else a freshly loaded acclient will overrwrite the values
+            // wait until first enter world is completed
+
+            //SendPropertyUpdatesAndOverrides();
+
+            // Init the client with the chat channel ID's, and then notify the player that they've choined the associated channels.
+            UpdateChatChannels();
+
             var general = new GameEventWeenieErrorWithString(Session, WeenieErrorWithString.YouHaveEnteredThe_Channel, "General");
             var trade = new GameEventWeenieErrorWithString(Session, WeenieErrorWithString.YouHaveEnteredThe_Channel, "Trade");
             var lfg = new GameEventWeenieErrorWithString(Session, WeenieErrorWithString.YouHaveEnteredThe_Channel, "LFG");
             var roleplay = new GameEventWeenieErrorWithString(Session, WeenieErrorWithString.YouHaveEnteredThe_Channel, "Roleplay");
-            Session.Network.EnqueueSend(setTurbineChatChannels, general, trade, lfg, roleplay);
+            Session.Network.EnqueueSend(general, trade, lfg, roleplay);
 
             // check if vassals earned XP while offline
             HandleAllegianceOnLogin();
             HandleHouseOnLogin();
 
+            // retail appeared to send the squelch list very early,
+            // even before the CreatePlayer, but doing it here
+            if (SquelchManager.HasSquelches)
+                SquelchManager.SendSquelchDB();
+
+            AuditItemSpells();
+
+            HandleMissingXp();
+            HandleSkillCreditRefund();
+
+            if (PlayerKillerStatus == PlayerKillerStatus.PKLite && !PropertyManager.GetBool("pkl_server").Item)
+            {
+                var actionChain = new ActionChain();
+                actionChain.AddDelaySeconds(3.0f);
+                actionChain.AddAction(this, () =>
+                {
+                    UpdateProperty(this, PropertyInt.PlayerKillerStatus, (int)PlayerKillerStatus.NPK, true);
+
+                    Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.YouAreNonPKAgain));
+                });
+                actionChain.EnqueueChain();
+            }
+
             HandleDBUpdates();
+        }
+
+        public void UpdateChatChannels()
+        {
+            var allegianceChannel = Allegiance != null ? Allegiance.Biota.Id : 0u;
+
+            Session.Network.EnqueueSend(new GameEventSetTurbineChatChannels(Session, allegianceChannel));
         }
 
         private void SendSelf()
@@ -72,7 +118,13 @@ namespace ACE.Server.WorldObjects
 
             SendInventoryAndWieldedItems();
 
-            // SendContractTrackerTable(); todo fix for new ef not use aceobj
+            SendContractTrackerTable();
+        }
+
+        public void SendPropertyUpdatesAndOverrides()
+        {
+            if (!PropertyManager.GetBool("require_spell_comps").Item)
+                Session.Network.EnqueueSend(new GameMessagePrivateUpdatePropertyBool(this, PropertyBool.SpellComponentsRequired, false));
         }
 
         /// <summary>
@@ -97,15 +149,16 @@ namespace ACE.Server.WorldObjects
             }
 
             foreach (var item in EquippedObjects.Values)
-                Session.Network.EnqueueSend(new GameMessageCreateObject(item));
+            {
+                item.Wielder = this;
+                Session.Network.EnqueueSend(new GameMessageCreateObject(item));                
+            }
         }
 
-        /// <summary>
-        /// This method is used to take our persisted tracked contracts and send them on to the client. Pg II
-        /// </summary>
         public void SendContractTrackerTable()
         {
-            Session.Network.EnqueueSend(new GameEventSendClientContractTrackerTable(Session, TrackedContracts.Select(x => x.Value).ToList()));
+            if (ContractManager.Contracts.Count > 0)
+                Session.Network.EnqueueSend(new GameEventSendClientContractTrackerTable(Session));
         }
 
         /// <summary>
@@ -140,10 +193,14 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Records where the client thinks we are, for use by physics engine later
         /// </summary>
-        public void SetRequestedLocation(Position pos)
+        public void SetRequestedLocation(Position pos, bool broadcast = true)
         {
             RequestedLocation = pos;
+            RequestedLocationBroadcast = broadcast;
         }
+
+        public MotionCommand LastSoulEmote;
+        public DateTime LastSoulEmoteEndTime;
 
         public void BroadcastMovement(MoveToState moveToState)
         {
@@ -171,13 +228,98 @@ namespace ACE.Server.WorldObjects
                     CurrentMotionState.SetForwardCommand(state.Commands[0].MotionCommand);
             }
 
+            if (state.HasSoulEmote(false))
+            {
+                // prevent soul emote spam / bug where client sends multiples
+                var soulEmote = state.Commands[0].MotionCommand;
+                if (soulEmote == LastSoulEmote && DateTime.UtcNow < LastSoulEmoteEndTime)
+                {
+                    state.Commands.Clear();
+                    state.CommandListLength = 0;
+                }
+                else
+                {
+                    var animLength = Physics.Animation.MotionTable.GetAnimationLength(MotionTableId, CurrentMotionState.Stance, soulEmote, state.Commands[0].Speed);
+
+                    LastSoulEmote = soulEmote;
+                    LastSoulEmoteEndTime = DateTime.UtcNow + TimeSpan.FromSeconds(animLength);
+                }
+            }
+
             var movementData = new MovementData(this, moveToState);
 
             var movementEvent = new GameMessageUpdateMotion(this, movementData);
-            EnqueueBroadcast(movementEvent);    // shouldn't need to go to originating player?
+            EnqueueBroadcast(true, movementEvent);    // shouldn't need to go to originating player?
 
             // TODO: use real motion / animation system from physics
-            CurrentMotionCommand = movementData.Invalid.State.ForwardCommand;
+            //CurrentMotionCommand = movementData.Invalid.State.ForwardCommand;
+            CurrentMovementData = movementData;
+        }
+
+        private EnvironChangeType? currentFogColor;
+
+        public void SetFogColor(EnvironChangeType fogColor)
+        {
+            if (fogColor == EnvironChangeType.Clear && !currentFogColor.HasValue)
+                return;                
+
+            if (LandblockManager.GlobalFogColor.HasValue && currentFogColor != fogColor)
+            {
+                currentFogColor = LandblockManager.GlobalFogColor;
+                SendEnvironChange(currentFogColor.Value);
+            }
+            else if (currentFogColor != fogColor)
+            {
+                currentFogColor = fogColor;
+                SendEnvironChange(currentFogColor.Value);
+            }
+
+            if (currentFogColor == EnvironChangeType.Clear)
+                currentFogColor = null;
+        }
+
+        public void ClearFogColor()
+        {
+            SetFogColor(EnvironChangeType.Clear);
+        }
+
+        public void SendEnvironChange(EnvironChangeType environChangeType)
+        {
+            Session.Network.EnqueueSend(new GameMessageAdminEnvirons(Session, environChangeType));
+        }
+
+        public void SetPlayerKillerStatus(PlayerKillerStatus playerKillerStatus, bool broadcast = false)
+        {
+            switch (playerKillerStatus)
+            {
+                case PlayerKillerStatus.NPK:
+                case PlayerKillerStatus.PK:
+                case PlayerKillerStatus.PKLite:
+                    PlayerKillerStatus = PlayerKillerStatus.NPK;
+                    MinimumTimeSincePk = 0;
+                    break;
+                case PlayerKillerStatus.Free:
+                    PlayerKillerStatus = PlayerKillerStatus.Free;
+                    break;
+            }
+
+            if (broadcast)
+                EnqueueBroadcast(new GameMessagePublicUpdatePropertyInt(this, PropertyInt.PlayerKillerStatus, (int)PlayerKillerStatus));
+        }
+
+        public void SendWeenieError(WeenieError error)
+        {
+            Session.Network.EnqueueSend(new GameEventWeenieError(Session, error));
+        }
+
+        public void SendWeenieErrorWithString(WeenieErrorWithString error, string str)
+        {
+            Session.Network.EnqueueSend(new GameEventWeenieErrorWithString(Session, error, str));
+        }
+
+        public void SendTransientError(string msg)
+        {
+            Session.Network.EnqueueSend(new GameEventCommunicationTransientString(Session, msg));
         }
     }
 }

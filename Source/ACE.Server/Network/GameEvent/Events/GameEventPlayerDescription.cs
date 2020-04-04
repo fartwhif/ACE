@@ -4,6 +4,7 @@ using System.Linq;
 using ACE.Database.Models.Shard;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
+using ACE.Entity.Models;
 using ACE.Server.Network.Structure;
 
 namespace ACE.Server.Network.GameEvent.Events
@@ -45,7 +46,7 @@ namespace ACE.Server.Network.GameEvent.Events
             var propertyFlags = DescriptionPropertyFlag.None;
             var propertyFlagsPos = Writer.BaseStream.Position;
             Writer.Write(0u);
-            Writer.Write(0x0Au);
+            Writer.Write((uint)Session.Player.WeenieType);
 
             var propertiesInt = Session.Player.GetAllPropertyInt().Where(x => SendOnLoginProperties.PropertiesInt.Contains((ushort)x.Key)).ToList();
 
@@ -125,7 +126,7 @@ namespace ACE.Server.Network.GameEvent.Events
                     Writer.Write((uint)property.Key);
                     if (property.Key == PropertyString.Name)
                     {
-                        if (Session.Player.IsPlussed && Session.Player.CloakStatus.HasValue && Session.Player.CloakStatus < CloakStatus.Player)
+                        if (Session.Player.IsPlussed && Session.Player.CloakStatus < CloakStatus.Player)
                             Writer.WriteString16L("+" + property.Value);
                         else
                             Writer.WriteString16L(property.Value);
@@ -192,13 +193,16 @@ namespace ACE.Server.Network.GameEvent.Events
 
             DescriptionVectorFlag vectorFlags = DescriptionVectorFlag.Attribute | DescriptionVectorFlag.Skill;
 
-            if (Session.Player.Biota.BiotaPropertiesSpellBook.Count > 0)
+            var knownSpells = Session.Player.Biota.CloneSpells(Session.Player.BiotaDatabaseLock);
+
+            if (knownSpells.Count > 0)
                 vectorFlags |= DescriptionVectorFlag.Spell;
             if (Session.Player.EnchantmentManager.HasEnchantments)
                 vectorFlags |= DescriptionVectorFlag.Enchantment;
 
             Writer.Write((uint)vectorFlags);
-            Writer.Write(1u);
+
+            Writer.Write(Convert.ToUInt32(Session.Player.Health != null));
 
             if ((vectorFlags & DescriptionVectorFlag.Attribute) != 0)
             {
@@ -294,12 +298,12 @@ namespace ACE.Server.Network.GameEvent.Events
 
             if ((vectorFlags & DescriptionVectorFlag.Spell) != 0)
             {
-                Writer.Write((ushort)Session.Player.Biota.BiotaPropertiesSpellBook.Count);
+                Writer.Write((ushort)knownSpells.Count);
                 Writer.Write((ushort)64);
 
-                foreach (var spell in Session.Player.Biota.BiotaPropertiesSpellBook)
+                foreach (var spell in knownSpells)
                 {
-                    Writer.Write(spell.Spell);
+                    Writer.Write(spell.Key);
                     // This sets a flag to use new spell configuration always 2
                     Writer.Write(2f);
                 }

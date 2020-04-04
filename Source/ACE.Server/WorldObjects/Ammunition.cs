@@ -1,10 +1,7 @@
 using System;
-using System.IO;
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
+
 using ACE.Entity;
-using ACE.Entity.Enum;
-using ACE.Server.Network.GameMessages.Messages;
+using ACE.Entity.Models;
 
 namespace ACE.Server.WorldObjects
 {
@@ -40,6 +37,11 @@ namespace ACE.Server.WorldObjects
         {
             var proj = new Projectile(this);
             proj.OnCollideEnvironment();
+        }
+
+        public override void ActOnUse(WorldObject wo)
+        {
+            // Do nothing
         }
     }
 }

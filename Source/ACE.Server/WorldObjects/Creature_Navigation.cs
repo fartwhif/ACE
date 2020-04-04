@@ -2,10 +2,12 @@ using System;
 using System.Numerics;
 using ACE.Entity;
 using ACE.Entity.Enum;
+using ACE.Entity.Enum.Properties;
 using ACE.Server.Entity;
 using ACE.Server.Entity.Actions;
 using ACE.Server.Physics.Animation;
 using ACE.Server.Physics.Extensions;
+using ACE.Server.Network.GameMessages.Messages;
 
 namespace ACE.Server.WorldObjects
 {
@@ -41,6 +43,33 @@ namespace ACE.Server.WorldObjects
             
             // get the 2D angle between these vectors
             return GetAngle(currentDir, targetDir);
+        }
+
+        public float GetAngle_Physics(WorldObject target)
+        {
+            var currentDir = GetCurrentDir_Physics();
+
+            var targetDir = Vector3.Zero;
+            if (Location.Indoors == target.Location.Indoors)
+                targetDir = GetDirection(Location.ToGlobal(), target.Location.ToGlobal());
+            else
+                targetDir = GetDirection(Location.Pos, target.Location.Pos);
+
+            targetDir.Z = 0.0f;
+            targetDir = Vector3.Normalize(targetDir);
+
+            // get the 2D angle between these vectors
+            return GetAngle(currentDir, targetDir);
+        }
+
+        public Vector3 GetCurrentDir_Physics()
+        {
+            return Vector3.Normalize(Vector3.Transform(Vector3.UnitY, PhysicsObj.Position.Frame.Orientation));
+        }
+
+        public float GetAngle_Physics2(WorldObject target)
+        {
+            return PhysicsObj.Position.heading_diff(target.PhysicsObj.Position);
         }
 
         /// <summary>
@@ -93,15 +122,30 @@ namespace ACE.Server.WorldObjects
         }
 
         /// <summary>
+        /// Sends a TurnToObject command to the client
+        /// </summary>
+        public void TurnToObject(WorldObject target, bool stopCompletely = false)
+        {
+            var turnToMotion = new Motion(this, target, MovementType.TurnToObject);
+
+            if (stopCompletely)
+                turnToMotion.MoveToParameters.MovementParameters |= MovementParams.StopCompletely;
+
+            EnqueueBroadcastMotion(turnToMotion);
+        }
+
+        /// <summary>
         /// Starts rotating a creature from its current direction
         /// so that it eventually is facing the target position
         /// </summary>
         /// <returns>The amount of time in seconds for the rotation to complete</returns>
         public virtual float Rotate(WorldObject target)
         {
+            if (target == null || target.Location == null)
+                return 0.0f;
+
             // send network message to start turning creature
-            var turnToMotion = new Motion(this, target, MovementType.TurnToObject);
-            EnqueueBroadcastMotion(turnToMotion);
+            TurnToObject(target);
 
             var angle = GetAngle(target);
             //Console.WriteLine("Angle: " + angle);
@@ -116,12 +160,16 @@ namespace ACE.Server.WorldObjects
             actionChain.AddDelaySeconds(rotateDelay);
             actionChain.AddAction(this, () =>
             {
+                if (target == null || target.Location == null)
+                    return;
+
                 var matchIndoors = Location.Indoors == target.Location.Indoors;
 
                 var globalLoc = matchIndoors ? Location.ToGlobal() : Location.Pos;
                 var targetLoc = matchIndoors ? target.Location.ToGlobal() : target.Location.Pos;
 
                 var targetDir = GetDirection(globalLoc, targetLoc);
+
                 Location.Rotate(targetDir);
             });
             actionChain.EnqueueChain();
@@ -182,6 +230,7 @@ namespace ACE.Server.WorldObjects
             {
                 var targetDir = position.GetCurrentDir();
                 Location.Rotate(targetDir);
+                PhysicsObj.Position.Frame.Orientation = Location.Rotation;
             });
             actionChain.EnqueueChain();
 
@@ -243,38 +292,91 @@ namespace ACE.Server.WorldObjects
             if (DebugMove)
                 Console.WriteLine($"{Name}.MoveTo({target.Name}, {runRate}) - CurPos: {Location.ToLOCString()} - DestPos: {AttackTarget.Location.ToLOCString()} - TargetDist: {Vector3.Distance(Location.ToGlobal(), AttackTarget.Location.ToGlobal())}");
 
-            if (this is Player) return;
-
-            var motion = new Motion(this, target, MovementType.MoveToObject);
-            motion.MoveToParameters.MovementParameters |= MovementParams.CanCharge | MovementParams.FailWalk | MovementParams.UseFinalHeading | MovementParams.Sticky | MovementParams.MoveAway;
-            motion.MoveToParameters.WalkRunThreshold = 1.0f;
-            motion.RunRate = runRate;
+            var motion = GetMoveToMotion(target, runRate);
 
             CurrentMotionState = motion;
 
             EnqueueBroadcastMotion(motion);
         }
 
+        public Motion GetMoveToMotion(WorldObject target, float runRate)
+        {
+            var motion = new Motion(this, target, MovementType.MoveToObject);
+            motion.MoveToParameters.MovementParameters |= MovementParams.CanCharge | MovementParams.FailWalk | MovementParams.UseFinalHeading | MovementParams.Sticky | MovementParams.MoveAway | MovementParams.StopCompletely;
+            motion.MoveToParameters.WalkRunThreshold = 1.0f;
+
+            // TODO: check distanceToObject sync
+
+            if (runRate > 0)
+                motion.RunRate = runRate;
+            else
+                motion.MoveToParameters.MovementParameters &= ~MovementParams.CanRun;
+
+            return motion;
+        }
+
+        public virtual void BroadcastMoveTo(Player player)
+        {
+            Motion motion = null;
+
+            if (AttackTarget != null)
+            {
+                // move to object
+                motion = GetMoveToMotion(AttackTarget, RunRate);
+            }
+            else
+            {
+                // move to position
+                var home = GetPosition(PositionType.Home);
+
+                motion = GetMoveToPosition(home, RunRate, 1.0f);
+            }
+
+            player.Session.Network.EnqueueSend(new GameMessageUpdateMotion(this, motion));
+        }
+
         /// <summary>
         /// Sends a network message for moving a creature to a new position
         /// </summary>
-        public void MoveTo(Position position, float runRate = 1.0f)
+        public void MoveTo(Position position, float runRate = 1.0f, bool setLoc = true, float? walkRunThreshold = null, float? speed = null)
         {
+            var motion = GetMoveToPosition(position, runRate, walkRunThreshold, speed);
+
+            // todo: use physics MoveToManager
+            // todo: handle landblock updates
+            if (setLoc)
+            {
+                Location = new Position(position);
+                PhysicsObj.SetPositionSimple(new Physics.Common.Position(position), true);
+            }
+
+            EnqueueBroadcastMotion(motion);
+        }
+
+        public Motion GetMoveToPosition(Position position, float runRate = 1.0f, float? walkRunThreshold = null, float? speed = null)
+        {
+            // TODO: change parameters to accept an optional MoveToParameters
+
             var motion = new Motion(this, position);
             motion.MovementType = MovementType.MoveToPosition;
             //motion.Flag |= MovementParams.CanCharge | MovementParams.FailWalk | MovementParams.UseFinalHeading | MovementParams.MoveAway;
-            motion.MoveToParameters.WalkRunThreshold = 1.0f;
-            motion.RunRate = runRate;
+            if (walkRunThreshold != null)
+                motion.MoveToParameters.WalkRunThreshold = walkRunThreshold.Value;
+            if (speed != null)
+                motion.MoveToParameters.Speed = speed.Value;
 
             // always use final heading?
             var frame = new AFrame(position.Pos, position.Rotation);
             motion.MoveToParameters.DesiredHeading = frame.get_heading();
             motion.MoveToParameters.MovementParameters |= MovementParams.UseFinalHeading;
+            motion.MoveToParameters.DistanceToObject = 0.6f;
 
-            // todo: use better movement system
-            Location = new Position(position);
+            if (runRate > 0)
+                motion.RunRate = runRate;
+            else
+                motion.MoveToParameters.MovementParameters &= ~MovementParams.CanRun;
 
-            EnqueueBroadcastMotion(motion);
+            return motion;
         }
     }
 }

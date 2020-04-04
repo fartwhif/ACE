@@ -1,7 +1,8 @@
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
+using System;
+
 using ACE.Entity;
 using ACE.Entity.Enum.Properties;
+using ACE.Entity.Models;
 
 namespace ACE.Server.WorldObjects
 {
@@ -36,7 +37,13 @@ namespace ACE.Server.WorldObjects
             set { if (value == null) RemoveProperty(PropertyString.KeyCode); else SetProperty(PropertyString.KeyCode, value); }
         }
 
-        public void HandleActionUseOnTarget(Player player, WorldObject target)
+        public bool OpensAnyLock
+        {
+            get => GetProperty(PropertyBool.OpensAnyLock) ?? false;
+            set { if (!value) RemoveProperty(PropertyBool.OpensAnyLock); else SetProperty(PropertyBool.OpensAnyLock, value); }
+        }
+
+        public override void HandleActionUseOnTarget(Player player, WorldObject target)
         {
             UnlockerHelper.UseUnlocker(player, this, target);
         }

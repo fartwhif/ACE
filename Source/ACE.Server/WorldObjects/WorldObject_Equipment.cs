@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+using ACE.Common;
 using ACE.Database.Models.World;
 using ACE.Entity.Enum;
 using ACE.Server.Entity;
@@ -15,14 +16,14 @@ namespace ACE.Server.WorldObjects
         {
             var items = new List<WorldObject>();
 
-            foreach (var item in Biota.BiotaPropertiesCreateList.Where(x => x.DestinationType == (int)type))
+            foreach (var item in Biota.PropertiesCreateList.Where(x => x.DestinationType == type))
             {
                 var wo = WorldObjectFactory.CreateNewWorldObject(item.WeenieClassId);
 
                 if (item.Palette > 0)
                     wo.PaletteTemplate = item.Palette;
 
-                if (item.Shade > 0)
+                if (item.Shade >= 0)
                     wo.Shade = item.Shade;
 
                 if (item.StackSize > 0)
@@ -78,31 +79,33 @@ namespace ACE.Server.WorldObjects
             if (item.PaletteId > 0)
                 wo.PaletteTemplate = (int)item.PaletteId;
 
-            if (item.Shade > 0)
+            if (item.Shade >= 0)
                 wo.Shade = item.Shade;
 
             if (item.StackSize > 0)
             {
-                // fix lugians only having 1 rock?
-                if (wo.Name.Equals("Rock") && item.StackSize == 1 && item.StackSizeVariance == 0)
-                {
-                    item.StackSize = 10;
-                    item.StackSizeVariance = 0.1f;
-                }
-
                 var stackSize = item.StackSize;
 
                 var hasVariance = item.StackSizeVariance > 0;
                 if (hasVariance)
                 {
-                    var minStack = (int)Math.Round(item.StackSize * item.StackSizeVariance);
+                    var minStack = (int)Math.Max(Math.Round(item.StackSize * item.StackSizeVariance), 1);
                     var maxStack = item.StackSize;
                     stackSize = ThreadSafeRandom.Next(minStack, maxStack);
                 }
                 wo.SetStackSize(stackSize);
             }
-
             return wo;
+        }
+
+        public virtual void OnWield(Creature creature)
+        {
+            EmoteManager.OnWield(creature);
+        }
+
+        public virtual void OnUnWield(Creature creature)
+        {
+            EmoteManager.OnUnwield(creature);
         }
     }
 }

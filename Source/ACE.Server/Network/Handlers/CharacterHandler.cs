@@ -7,10 +7,10 @@ using log4net;
 using ACE.Common;
 using ACE.Common.Extensions;
 using ACE.Database;
-using ACE.Database.Models.Shard;
-using ACE.Database.Models.World;
+using ACE.DatLoader;
 using ACE.Entity;
 using ACE.Entity.Enum;
+using ACE.Entity.Models;
 using ACE.Server.Factories;
 using ACE.Server.Managers;
 using ACE.Server.Network.Enum;
@@ -31,7 +31,10 @@ namespace ACE.Server.Network.Handlers
             if (clientString != session.Account)
                 return;
 
-            CharacterCreateEx(message, session);
+            if (WorldManager.WorldStatus == WorldManager.WorldStatusState.Open || session.AccessLevel > AccessLevel.Player)
+                CharacterCreateEx(message, session);
+            else
+                session.SendCharacterError(CharacterError.LogonServerFull);
         }
 
         private static void CharacterCreateEx(ClientMessage message, Session session)
@@ -57,9 +60,6 @@ namespace ACE.Server.Network.Handlers
                 return;
             }
 
-            var isAdmin = characterCreateInfo.IsAdmin && (session.AccessLevel >= AccessLevel.Developer);
-            var isEnvoy = characterCreateInfo.IsEnvoy && (session.AccessLevel >= AccessLevel.Sentinel);
-
             Weenie weenie;
             if (ConfigManager.Config.Server.Accounts.OverrideCharacterPermissions)
             {
@@ -70,25 +70,25 @@ namespace ACE.Server.Network.Handlers
                 else
                     weenie = DatabaseManager.World.GetCachedWeenie("human");
 
-                if (characterCreateInfo.Heritage == (int)HeritageGroup.Olthoi && weenie.Type == (int)WeenieType.Admin)
+                if (characterCreateInfo.Heritage == (int)HeritageGroup.Olthoi && weenie.WeenieType == WeenieType.Admin)
                     weenie = DatabaseManager.World.GetCachedWeenie("olthoiadmin");
 
-                if (characterCreateInfo.Heritage == (int)HeritageGroup.OlthoiAcid && weenie.Type == (int)WeenieType.Admin)
+                if (characterCreateInfo.Heritage == (int)HeritageGroup.OlthoiAcid && weenie.WeenieType == WeenieType.Admin)
                     weenie = DatabaseManager.World.GetCachedWeenie("olthoiacidadmin");
             }
             else
                 weenie = DatabaseManager.World.GetCachedWeenie("human");
 
-            if (characterCreateInfo.Heritage == (int)HeritageGroup.Olthoi && weenie.Type == (int)WeenieType.Creature)
+            if (characterCreateInfo.Heritage == (int)HeritageGroup.Olthoi && weenie.WeenieType == WeenieType.Creature)
                 weenie = DatabaseManager.World.GetCachedWeenie("olthoiplayer");
 
-            if (characterCreateInfo.Heritage == (int)HeritageGroup.OlthoiAcid && weenie.Type == (int)WeenieType.Creature)
+            if (characterCreateInfo.Heritage == (int)HeritageGroup.OlthoiAcid && weenie.WeenieType == WeenieType.Creature)
                 weenie = DatabaseManager.World.GetCachedWeenie("olthoiacidplayer");
 
-            if (isEnvoy)
+            if (characterCreateInfo.IsSentinel && session.AccessLevel >= AccessLevel.Sentinel)
                 weenie = DatabaseManager.World.GetCachedWeenie("sentinel");
 
-            if (isAdmin)
+            if (characterCreateInfo.IsAdmin && session.AccessLevel >= AccessLevel.Developer)
                 weenie = DatabaseManager.World.GetCachedWeenie("admin");
 
             if (weenie == null)
@@ -103,21 +103,23 @@ namespace ACE.Server.Network.Handlers
 
             // Removes the generic knife and buckler, hidden Javelin, 30 stack of arrows, and 5 stack of coins that are given to all characters
             // Starter Gear from the JSON file are added to the character later in the CharacterCreateEx() process
-            weenie.WeeniePropertiesCreateList.Clear();
+            weenie.PropertiesCreateList = null;
 
             var guid = GuidManager.NewPlayerGuid();
+
+            var weenieType = weenie.WeenieType;
 
             // If Database didn't have Sentinel/Admin weenies, alter the weenietype coming in.
             if (ConfigManager.Config.Server.Accounts.OverrideCharacterPermissions)
             {
-                if (session.AccessLevel >= AccessLevel.Developer && session.AccessLevel <= AccessLevel.Admin && weenie.Type != (int)WeenieType.Admin)
-                    weenie.Type = (int)WeenieType.Admin;
-                else if (session.AccessLevel >= AccessLevel.Sentinel && session.AccessLevel <= AccessLevel.Envoy && weenie.Type != (int)WeenieType.Sentinel)
-                    weenie.Type = (int)WeenieType.Sentinel;
+                if (session.AccessLevel >= AccessLevel.Developer && session.AccessLevel <= AccessLevel.Admin && weenieType != WeenieType.Admin)
+                    weenieType = WeenieType.Admin;
+                else if (session.AccessLevel >= AccessLevel.Sentinel && session.AccessLevel <= AccessLevel.Envoy && weenieType != WeenieType.Sentinel)
+                    weenieType = WeenieType.Sentinel;
             }
 
 
-            var result = PlayerFactory.Create(characterCreateInfo, weenie, guid, session.AccountId, out var player);
+            var result = PlayerFactory.Create(characterCreateInfo, weenie, guid, session.AccountId, weenieType, out var player);
 
             if (result != PlayerFactory.CreateResult.Success || player == null)
             {
@@ -125,6 +127,11 @@ namespace ACE.Server.Network.Handlers
                 return;
             }
 
+            if (PropertyManager.GetBool("taboo_table").Item && DatManager.PortalDat.TabooTable.ContainsBadWord(characterCreateInfo.Name.ToLowerInvariant()))
+            {
+                SendCharacterCreateResponse(session, CharacterGenerationVerificationResponse.NameBanned);
+                return;
+            }
 
             DatabaseManager.Shard.IsCharacterNameAvailable(characterCreateInfo.Name, isAvailable =>
             {
@@ -165,7 +172,10 @@ namespace ACE.Server.Network.Handlers
         [GameMessage(GameMessageOpcode.CharacterEnterWorldRequest, SessionState.AuthConnected)]
         public static void CharacterEnterWorldRequest(ClientMessage message, Session session)
         {
-            session.Network.EnqueueSend(new GameMessageCharacterEnterWorldServerReady());
+            if (WorldManager.WorldStatus == WorldManager.WorldStatusState.Open || session.AccessLevel > AccessLevel.Player)
+                session.Network.EnqueueSend(new GameMessageCharacterEnterWorldServerReady());
+            else
+                session.SendCharacterError(CharacterError.LogonServerFull);
         }
 
         [GameMessage(GameMessageOpcode.CharacterEnterWorld, SessionState.AuthConnected)]
@@ -188,6 +198,12 @@ namespace ACE.Server.Network.Handlers
                 return;
             }
 
+            if (character.IsDeleted || character.DeleteTime > 0)
+            {
+                session.SendCharacterError(CharacterError.EnterGameCharacterNotOwned);
+                return;
+            }
+
             if (PlayerManager.GetOnlinePlayer(guid) != null)
             {
                 // If this happens, it could be that the previous session for this Player terminated in a way that didn't transfer the player to offline via PlayerManager properly.
@@ -195,10 +211,18 @@ namespace ACE.Server.Network.Handlers
                 return;
             }
 
-            if (PlayerManager.GetOfflinePlayer(guid) == null)
+            var offlinePlayer = PlayerManager.GetOfflinePlayer(guid);
+
+            if (offlinePlayer == null)
             {
                 // This would likely only happen if the account tried to log in a character that didn't exist.
                 session.SendCharacterError(CharacterError.EnterGameGeneric);
+                return;
+            }
+
+            if (offlinePlayer.IsDeleted || offlinePlayer.IsPendingDeletion)
+            {
+                session.SendCharacterError(CharacterError.EnterGameCharacterNotOwned);
                 return;
             }
 
@@ -223,6 +247,12 @@ namespace ACE.Server.Network.Handlers
             string clientString = message.Payload.ReadString16L();
             uint characterSlot = message.Payload.ReadUInt32();
 
+            if (WorldManager.WorldStatus == WorldManager.WorldStatusState.Closed && session.AccessLevel < AccessLevel.Advocate)
+            {
+                session.SendCharacterError(CharacterError.LogonServerFull);
+                return;
+            }
+
             if (clientString != session.Account)
             {
                 session.SendCharacterError(CharacterError.Delete);
@@ -231,6 +261,14 @@ namespace ACE.Server.Network.Handlers
 
             var character = session.Characters[(int)characterSlot];
             if (character == null)
+            {
+                session.SendCharacterError(CharacterError.Delete);
+                return;
+            }
+
+            var offlinePlayer = PlayerManager.GetOfflinePlayer(session.Characters[(int)characterSlot].Id);
+
+            if (offlinePlayer == null || offlinePlayer.IsDeleted || offlinePlayer.IsPendingDeletion)
             {
                 session.SendCharacterError(CharacterError.Delete);
                 return;
@@ -247,6 +285,7 @@ namespace ACE.Server.Network.Handlers
                 if (result)
                 {
                     session.Network.EnqueueSend(new GameMessageCharacterList(session.Characters, session));
+
                     PlayerManager.HandlePlayerDelete(character.Id);
                 }
                 else
@@ -259,9 +298,21 @@ namespace ACE.Server.Network.Handlers
         {
             var guid = message.Payload.ReadUInt32();
 
+            if (WorldManager.WorldStatus == WorldManager.WorldStatusState.Closed && session.AccessLevel < AccessLevel.Advocate)
+            {
+                session.SendCharacterError(CharacterError.LogonServerFull);
+                return;
+            }
+
             var character = session.Characters.SingleOrDefault(c => c.Id == guid);
             if (character == null)
                 return;
+
+            if (Time.GetUnixTime() > character.DeleteTime || character.IsDeleted)
+            {
+                session.SendCharacterError(CharacterError.EnterGameCharacterNotOwned);
+                return;
+            }
 
             DatabaseManager.Shard.IsCharacterNameAvailable(character.Name, isAvailable =>
             {

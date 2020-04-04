@@ -5,7 +5,6 @@ namespace ACE.Database.Models.Shard
 {
     public partial class BiotaPropertiesPosition
     {
-        public uint Id { get; set; }
         public uint ObjectId { get; set; }
         public ushort PositionType { get; set; }
         public uint ObjCellId { get; set; }
@@ -17,6 +16,6 @@ namespace ACE.Database.Models.Shard
         public float AnglesY { get; set; }
         public float AnglesZ { get; set; }
 
-        public Biota Object { get; set; }
+        public virtual Biota Object { get; set; }
     }
 }

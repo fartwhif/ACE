@@ -9,6 +9,9 @@ using Microsoft.EntityFrameworkCore.Storage;
 
 using ACE.Database.Models.Auth;
 using ACE.Entity.Enum;
+using System.Collections.Generic;
+using System;
+using System.Net;
 
 namespace ACE.Database
 {
@@ -48,7 +51,7 @@ namespace ACE.Database
         }
 
         /// <exception cref="MySqlException">Account with name already exists.</exception>
-        public Account CreateAccount(string name, string password, AccessLevel accessLevel)
+        public Account CreateAccount(string name, string password, AccessLevel accessLevel, IPAddress address)
         {
             var account = new Account();
 
@@ -56,6 +59,9 @@ namespace ACE.Database
             account.SetPassword(password);
             account.SetSaltForBCrypt();
             account.AccessLevel = (uint)accessLevel;
+
+            account.CreateTime = DateTime.UtcNow;
+            account.CreateIP = address.GetAddressBytes();
 
             using (var context = new AuthDbContext())
             {
@@ -134,6 +140,25 @@ namespace ACE.Database
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Will return null if the accountId was not found.
+        /// </summary>
+        public List<string> GetListofAccountsByAccessLevel(AccessLevel accessLevel)
+        {
+            using (var context = new AuthDbContext())
+            {
+                var results = context.Account
+                    .AsNoTracking()
+                    .Where(r => r.AccessLevel == Convert.ToUInt32(accessLevel)).ToList();
+
+                var result = new List<string>();
+                foreach (var account in results)
+                    result.Add(account.AccountName);
+
+                return result;
+            }
         }
     }
 }
