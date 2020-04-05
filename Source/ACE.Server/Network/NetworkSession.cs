@@ -265,78 +265,12 @@ namespace ACE.Server.Network
                 return;
             }
 
-            while (clientPacketQueue.TryRemove(0, out ClientPacket connectionLessPacket))
-            {
-                if (connectionLessPacket.Header.HasFlag(PacketHeaderFlags.EncryptedChecksum))
-                {
-                    continue;
-                }
-                if (!connectionLessPacket.VerifyCRC(ConnectionData.CryptoClient))
-                {
-                    continue;
-                }
-                if (session.State == SessionState.AuthLoginRequest && connectionLessPacket.Header.HasFlag(PacketHeaderFlags.LoginRequest))
-                {
-                    HandleOrderedPacket(connectionLessPacket);
-                    return;
-                }
-                if (connectionLessPacket.Header.HasFlag(PacketHeaderFlags.Disconnect))
-                {
-                    session.Terminate(SessionTerminationReason.PacketHeaderDisconnect);
-                    return;
-                }
-                if (connectionLessPacket.Header.HasFlag(PacketHeaderFlags.NetErrorDisconnect))
-                {
-                    session.Terminate(SessionTerminationReason.ClientSentNetworkErrorDisconnect);
-                    return;
-                }
-                if (connectionLessPacket.Header.HasFlag(PacketHeaderFlags.RequestRetransmit))
-                {
-                    NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
-                    foreach (uint sequence in connectionLessPacket.HeaderOptional.RetransmitData.OrderBy(k => k))
-                    {
-                        Retransmit(sequence);
-                    }
-                    connectionLessPacket.HeaderOptional.RetransmitData = null; //prevent processing this again in ordered stage
-                    HandleOrderedPacket(connectionLessPacket);
-                }
-            }
-
-            if (clientPacketQueue.IsEmpty)
-            {
-                return;
-            }
-
             var desiredSeq = lastReceivedPacketSequence == 0 ? 0 : lastReceivedPacketSequence + 1;
             while (true)
             {
                 ClientPacket oPacket = null;
-                if (desiredSeq == 1)
-                {
-                    //sometimes client will issue packet 1, sometimes it won't...
-                    if (!clientPacketQueue.ContainsKey(1) && clientPacketQueue.ContainsKey(2))
-                    {
-                        clientPacketQueue.TryRemove(desiredSeq + 1, out oPacket);
-                    }
-                }
-                else
-                {
-                    clientPacketQueue.TryRemove(desiredSeq, out oPacket);
-                }
-                if (oPacket == null)
-                {
-                    // Do S2C NAK if necessary
-                    if (!clientPacketQueue.IsEmpty && SinceLastS2CRetransmittion.ElapsedMilliseconds > 500)
-                    {
-                        var seq = clientPacketQueue.Max(k => k.Key);
-                        if (seq > lastReceivedPacketSequence + 2)
-                        {
-                            DoRequestForRetransmission(seq);
-                        }
-                    }
-                    break;
-                }
-                else
+                clientPacketQueue.TryRemove(desiredSeq, out oPacket);
+                if (oPacket != null)
                 {
                     if (!oPacket.VerifyCRC(ConnectionData.CryptoClient))
                     {
@@ -344,28 +278,123 @@ namespace ACE.Server.Network
                     }
                     else
                     {
+                        if (oPacket.Header.HasFlag(PacketHeaderFlags.Disconnect))
+                        {
+                            session.Terminate(SessionTerminationReason.PacketHeaderDisconnect);
+                            return;
+                        }
+                        if (oPacket.Header.HasFlag(PacketHeaderFlags.NetErrorDisconnect))
+                        {
+                            session.Terminate(SessionTerminationReason.ClientSentNetworkErrorDisconnect);
+                            return;
+                        }
+                        if (oPacket.Header.HasFlag(PacketHeaderFlags.RequestRetransmit))
+                        {
+                            NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
+                            foreach (uint sequence in oPacket.HeaderOptional.RetransmitData.OrderBy(k => k))
+                            {
+                                Retransmit(sequence);
+                            }
+                            oPacket.HeaderOptional.RetransmitData = null; //prevent processing this again in ordered stage
+                        }
+
+
                         packetLog.DebugFormat("[{0}] Processing packet {1}", session.LoggingIdentifier, oPacket.Header.Sequence);
-                        HandleOrderedPacket(oPacket);
+                        //packetLog.DebugFormat("[{0}] Handling packet {1}", session.LoggingIdentifier, oPacket.Header.Sequence);
+
+                        // depending on the current session state:
+                        // Set the next timeout tick value, to compare against in the WorldManager
+                        // Sessions that have gone past the AuthLoginRequest step will stay active for a longer period of time (exposed via configuration) 
+                        // Sessions that in the AuthLoginRequest will have a short timeout, as set in the AuthenticationHandler.DefaultAuthTimeout.
+                        // Example: Applications that check uptime will stay in the AuthLoginRequest state.
+                        session.Network.TimeoutTick = (session.State == SessionState.AuthLoginRequest) ?
+                            DateTime.UtcNow.AddSeconds(AuthenticationHandler.DefaultAuthTimeout).Ticks : // Default is 15s
+                            DateTime.UtcNow.AddSeconds(NetworkManager.DefaultSessionTimeout).Ticks; // Default is 60s
+
+                        // If we have an EchoRequest flag, we should flag to respond with an echo response on next send.
+                        if (oPacket.Header.HasFlag(PacketHeaderFlags.EchoRequest))
+                        {
+                            FlagEcho(oPacket.HeaderOptional.EchoRequestClientTime);
+                            VerifyEcho(oPacket.HeaderOptional.EchoRequestClientTime);
+                        }
+
+                        if (oPacket.Header.HasFlag(PacketHeaderFlags.RequestRetransmit) && oPacket.HeaderOptional.RetransmitData != null)
+                        {
+                            NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
+                            foreach (uint sequence in oPacket.HeaderOptional.RetransmitData.OrderBy(k => k))
+                            {
+                                Retransmit(sequence);
+                            }
+                        }
+
+                        // If we have an AcknowledgeSequence flag, we can clear our cached oPacket buffer up to that sequence.
+                        if (oPacket.Header.HasFlag(PacketHeaderFlags.AckSequence))
+                            AcknowledgeSequence(oPacket.HeaderOptional.AckSequence);
+
+                        if (oPacket.Header.HasFlag(PacketHeaderFlags.TimeSync))
+                        {
+                            packetLog.DebugFormat("[{0}] Incoming TimeSync TS: {1}", session.LoggingIdentifier, oPacket.HeaderOptional.TimeSynch);
+                            // Do something with this...
+                            // Based on network traces these are not 1:1.  Server seems to send them every 20 seconds per port.
+                            // Client seems to send them alternatingly every 2 or 4 seconds per port.
+                            // We will send this at a 20 second time interval.  I don't know what to do with these when we receive them at this point.
+                        }
+
+                        // This should be set on the first Packet to the server indicating the client is logging in.
+                        // This is the start of a three-way handshake between the client and server (LoginRequest, ConnectRequest, ConnectResponse)
+                        // Note this would be sent to each server a client would connect too (Login and each world).
+                        // In our current implimenation we handle all roles in this one server.
+                        if (oPacket.Header.HasFlag(PacketHeaderFlags.LoginRequest))
+                        {
+                            packetLog.Debug($"[{session.LoggingIdentifier}] LoginRequest");
+                            AuthenticationHandler.HandleLoginRequest(oPacket, session);
+                            return;
+                        }
+
+                        // Process all fragments out of the oPacket
+                        foreach (ClientPacketFragment fragment in oPacket.Fragments)
+                            ProcessFragment(fragment);
+
+                        // Update the last received sequence.
+                        if (oPacket.Header.Sequence != 0 && oPacket.Header.Flags != PacketHeaderFlags.AckSequence)
+                        {
+                            Debug.Assert(oPacket.Header.Sequence == lastReceivedPacketSequence);
+                            lastReceivedPacketSequence = oPacket.Header.Sequence;
+                        }
+
                         CheckOutOfOrderFragments();
                     }
                 }
-            }
-
-            if (lastReceivedPacketSequence > 2u)
-            {
-                // due to the fact that net layer is still incomplete, arbitrary cleanup is needed.
-                var stragglers = clientPacketQueue.Where(k => k.Key < lastReceivedPacketSequence + 1).Select(k => k.Key).ToArray();
-                ClientPacket straggler = null;
-                for (int i = 0; i < stragglers.Length; i++)
+                else
                 {
-                    clientPacketQueue.TryRemove(stragglers[i], out straggler);
+                    // Do S2C NAK if necessary
+                    if (!clientPacketQueue.IsEmpty && SinceLastS2CRetransmittion.ElapsedMilliseconds > 500)
+                    {
+                        var seq = clientPacketQueue.Max(k => k.Key);
+                        if (seq > desiredSeq + 2)
+                        {
+                            DoRequestForRetransmission(seq);
+                        }
+                    }
+                    break;
                 }
             }
 
-            if (clientPacketQueue.IsEmpty)
-            {
-                return;
-            }
+            //if (lastReceivedPacketSequence > 2u)
+            //{
+            //    // due to the fact that net layer is still incomplete, arbitrary cleanup is needed.
+            //    var stragglers = clientPacketQueue.Where(k => k.Key < lastReceivedPacketSequence + 1).Select(k => k.Key).ToArray();
+            //    ClientPacket straggler = null;
+            //    for (int i = 0; i < stragglers.Length; i++)
+            //    {
+            //        clientPacketQueue.TryRemove(stragglers[i], out straggler);
+            //    }
+            //}
+
+            //if (clientPacketQueue.IsEmpty)
+            //{
+            //    return;
+            //}
 
 
         }
@@ -416,79 +445,14 @@ namespace ACE.Server.Network
 
         private Stopwatch SinceLastS2CRetransmittion = Stopwatch.StartNew();
 
-        /// <summary>
-        /// Handles a packet<para />
-        /// Packets at this stage are already verified, "half processed", and reordered
-        /// </summary>
-        /// <param name="packet">ClientPacket to handle</param>
-        private void HandleOrderedPacket(ClientPacket packet)
-        {
-            packetLog.DebugFormat("[{0}] Handling packet {1}", session.LoggingIdentifier, packet.Header.Sequence);
 
-            // depending on the current session state:
-            // Set the next timeout tick value, to compare against in the WorldManager
-            // Sessions that have gone past the AuthLoginRequest step will stay active for a longer period of time (exposed via configuration) 
-            // Sessions that in the AuthLoginRequest will have a short timeout, as set in the AuthenticationHandler.DefaultAuthTimeout.
-            // Example: Applications that check uptime will stay in the AuthLoginRequest state.
-            session.Network.TimeoutTick = (session.State == SessionState.AuthLoginRequest) ?
-                DateTime.UtcNow.AddSeconds(AuthenticationHandler.DefaultAuthTimeout).Ticks : // Default is 15s
-                DateTime.UtcNow.AddSeconds(NetworkManager.DefaultSessionTimeout).Ticks; // Default is 60s
-
-            // If we have an EchoRequest flag, we should flag to respond with an echo response on next send.
-            if (packet.Header.HasFlag(PacketHeaderFlags.EchoRequest))
-            {
-                FlagEcho(packet.HeaderOptional.EchoRequestClientTime);
-                VerifyEcho(packet.HeaderOptional.EchoRequestClientTime);
-            }
-
-            if (packet.Header.HasFlag(PacketHeaderFlags.RequestRetransmit) && packet.HeaderOptional.RetransmitData != null)
-            {
-                NetworkStatistics.C2S_RequestsForRetransmit_Aggregate_Increment();
-                foreach (uint sequence in packet.HeaderOptional.RetransmitData.OrderBy(k => k))
-                {
-                    Retransmit(sequence);
-                }
-            }
-
-            // If we have an AcknowledgeSequence flag, we can clear our cached packet buffer up to that sequence.
-            if (packet.Header.HasFlag(PacketHeaderFlags.AckSequence))
-                AcknowledgeSequence(packet.HeaderOptional.AckSequence);
-
-            if (packet.Header.HasFlag(PacketHeaderFlags.TimeSync))
-            {
-                packetLog.DebugFormat("[{0}] Incoming TimeSync TS: {1}", session.LoggingIdentifier, packet.HeaderOptional.TimeSynch);
-                // Do something with this...
-                // Based on network traces these are not 1:1.  Server seems to send them every 20 seconds per port.
-                // Client seems to send them alternatingly every 2 or 4 seconds per port.
-                // We will send this at a 20 second time interval.  I don't know what to do with these when we receive them at this point.
-            }
-
-            // This should be set on the first packet to the server indicating the client is logging in.
-            // This is the start of a three-way handshake between the client and server (LoginRequest, ConnectRequest, ConnectResponse)
-            // Note this would be sent to each server a client would connect too (Login and each world).
-            // In our current implimenation we handle all roles in this one server.
-            if (packet.Header.HasFlag(PacketHeaderFlags.LoginRequest))
-            {
-                packetLog.Debug($"[{session.LoggingIdentifier}] LoginRequest");
-                AuthenticationHandler.HandleLoginRequest(packet, session);
-                return;
-            }
-
-            // Process all fragments out of the packet
-            foreach (ClientPacketFragment fragment in packet.Fragments)
-                ProcessFragment(fragment);
-
-            // Update the last received sequence.
-            if (packet.Header.Sequence != 0 && packet.Header.Flags != PacketHeaderFlags.AckSequence)
-                lastReceivedPacketSequence = packet.Header.Sequence;
-        }
 
         public void LoginCompleteBeginProcessing()
         {
             Interlocked.Decrement(ref loginTasks);
-            if (lastReceivedPacketSequence != 0)
-                throw new Exception("abnormal network session state");
-            lastReceivedPacketSequence = 1;
+            //if (lastReceivedPacketSequence != 0)
+            //    throw new Exception("abnormal network session state");
+            //lastReceivedPacketSequence = 1;
         }
 
         /// <summary>

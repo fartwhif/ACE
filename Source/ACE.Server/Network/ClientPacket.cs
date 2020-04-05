@@ -57,7 +57,7 @@ namespace ACE.Server.Network
                     try
                     {
                         var fragment = new ClientPacketFragment();
-                        fragment.Unpack(DataReader);
+                        if (!fragment.Unpack(DataReader)) return false;
 
                         Fragments.Add(fragment);
                     }
@@ -130,9 +130,10 @@ namespace ACE.Server.Network
         {
             if (Header.HasFlag(PacketHeaderFlags.EncryptedChecksum))
             {
-                if (((Header.Checksum - headerChecksum) ^ payloadChecksum) == fq.CurrentKey)
+                var key = ((Header.Checksum - headerChecksum) ^ payloadChecksum);
+                if (fq.Search(key))
                 {
-                    fq.ConsumeKey();
+                    fq.ConsumeKey(key);
                     return true;
                 }
             }
