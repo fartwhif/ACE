@@ -4,9 +4,11 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
+using ACE.Common;
 using ACE.Common.Cryptography;
 using ACE.Entity.Enum;
 using ACE.Server.Entity;
@@ -21,7 +23,7 @@ using log4net;
 
 namespace ACE.Server.Network
 {
-    public class NetworkSession
+    public class NetworkSession : INeedCleanup
     {
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
         private static readonly ILog packetLog = LogManager.GetLogger(System.Reflection.Assembly.GetEntryAssembly(), "Packets");
@@ -30,8 +32,9 @@ namespace ACE.Server.Network
         private const int timeBetweenTimeSync = 20000; // 20s
         private const int timeBetweenAck = 2000; // 2s
 
-        private readonly Session session;
-        private readonly ConnectionListener connectionListener;
+        public IPEndPoint EndPoint { get; set; }
+
+        private Session session;
 
         private readonly Object[] currentBundleLocks = new Object[(int)GameMessageGroup.QueueMax];
         private readonly NetworkBundle[] currentBundles = new NetworkBundle[(int)GameMessageGroup.QueueMax];
@@ -60,7 +63,7 @@ namespace ACE.Server.Network
         /// ConnectionListener.OnDataReceieve()->Session.HandlePacket()->This.HandlePacket(packet), This path can come from any client or other thinkable object.<para />
         /// WorldManager.UpdateWorld()->Session.Update(lastTick)->This.Update(lastTick)
         /// </summary>
-        private readonly ConcurrentDictionary<uint /*seq*/, ServerPacket> cachedPackets = new ConcurrentDictionary<uint /*seq*/, ServerPacket>();
+        private ConcurrentDictionary<uint /*seq*/, ServerPacket> cachedPackets = new ConcurrentDictionary<uint /*seq*/, ServerPacket>();
 
         private static readonly TimeSpan cachedPacketPruneInterval = TimeSpan.FromSeconds(5);
         private DateTime lastCachedPacketPruneTime;
@@ -76,9 +79,9 @@ namespace ACE.Server.Network
         /// [ConnectionListener Thread + 1] WorldManager.ProcessPacket()->Session.ProcessPacket()->NetworkSession.ProcessPacket()-> ... AuthenticationHandler<para />
         /// [World Manager Thread] WorldManager.UpdateWorld()->Session.Update(lastTick)->This.Update(lastTick)<para />
         /// </summary>
-        private readonly ConcurrentQueue<ServerPacket> packetQueue = new ConcurrentQueue<ServerPacket>();
+        private ConcurrentQueue<ServerPacket> packetQueue = new ConcurrentQueue<ServerPacket>();
 
-        public readonly SessionConnectionData ConnectionData = new SessionConnectionData();
+        public SessionConnectionData ConnectionData = null;
 
         /// <summary>
         /// Stores the tick value for the when an active session will timeout. If this value is in the past, the session is dead/inactive.
@@ -88,10 +91,10 @@ namespace ACE.Server.Network
         public ushort ClientId { get; }
         public ushort ServerId { get; }
 
-        public NetworkSession(Session session, ConnectionListener connectionListener, ushort clientId, ushort serverId)
+        public NetworkSession(Session session, ushort clientId, ushort serverId, IPEndPoint endPoint)
         {
+            EndPoint = endPoint;
             this.session = session;
-            this.connectionListener = connectionListener;
 
             ClientId = clientId;
             ServerId = serverId;
@@ -104,6 +107,8 @@ namespace ACE.Server.Network
                 currentBundleLocks[i] = new object();
                 currentBundles[i] = new NetworkBundle();
             }
+
+            ConnectionData = new SessionConnectionData(ClientId);
         }
 
         /// <summary>
@@ -421,9 +426,10 @@ namespace ACE.Server.Network
             // In our current implimenation we handle all roles in this one server.
             if (packet.Header.HasFlag(PacketHeaderFlags.LoginRequest))
             {
-                packetLog.Debug($"[{session.LoggingIdentifier}] LoginRequest");
-                AuthenticationHandler.HandleLoginRequest(packet, session);
-                return;
+                log.Error("LoginRequest @ NetworkSession.HandleOrderedPacket");
+                //packetLog.Debug($"[{session.LoggingIdentifier}] LoginRequest");
+                //AuthenticationHandler.HandleLoginRequest(packet, session);
+                //return;
             }
 
             // Process all fragments out of the packet
@@ -619,26 +625,27 @@ namespace ACE.Server.Network
 
         private void AcknowledgeSequence(uint sequence)
         {
-            // TODO Sending Acks seems to cause some issues.  Needs further research.
-            // if (!sendAck)
-            //    sendAck = true;
-
-            var removalList = cachedPackets.Keys.Where(x => x < sequence);
-
-            foreach (var key in removalList)
-                cachedPackets.TryRemove(key, out _);
+            IEnumerable<KeyValuePair<uint, ServerPacket>> removalList = cachedPackets.Where(x => x.Key < sequence);
+            foreach (KeyValuePair<uint, ServerPacket> item in removalList)
+            {
+                cachedPackets.TryRemove(item.Key, out ServerPacket removedPacket);
+                if (removedPacket.Data != null)
+                {
+                    removedPacket.Data.Dispose();
+                }
+            }
         }
 
         private void Retransmit(uint sequence)
         {
-            if (cachedPackets.TryGetValue(sequence, out var cachedPacket))
+            if (cachedPackets.TryGetValue(sequence, out ServerPacket cachedPacket))
             {
-                packetLog.DebugFormat("[{0}] Retransmit {1}", session.LoggingIdentifier, sequence);
-
+                //packetLog.DebugFormat("[{0}] Retransmit {1}", session.LoggingIdentifier, sequence);
                 if (!cachedPacket.Header.HasFlag(PacketHeaderFlags.Retransmission))
+                {
                     cachedPacket.Header.Flags |= PacketHeaderFlags.Retransmission;
-
-                SendPacketRaw(cachedPacket);
+                }
+                NetworkManager.SendPacket(cachedPacket, EndPoint);
             }
             else
             {
@@ -648,89 +655,35 @@ namespace ACE.Server.Network
 
         private void FlushPackets()
         {
-            while (packetQueue.TryDequeue(out var packet))
+            while (packetQueue.TryDequeue(out ServerPacket packet))
             {
                 packetLog.DebugFormat("[{0}] Flushing packets, count {1}", session.LoggingIdentifier, packetQueue.Count);
 
                 if (packet.Header.HasFlag(PacketHeaderFlags.EncryptedChecksum) && ConnectionData.PacketSequence.CurrentValue == 0)
+                {
                     ConnectionData.PacketSequence = new Sequence.UIntSequence(1);
+                }
 
                 bool isNak = packet.Header.Flags.HasFlag(PacketHeaderFlags.RequestRetransmit);
 
                 // If we are only ACKing, then we don't seem to have to increment the sequence
                 if (packet.Header.Flags == PacketHeaderFlags.AckSequence || isNak)
+                {
                     packet.Header.Sequence = ConnectionData.PacketSequence.CurrentValue;
+                }
                 else
+                {
                     packet.Header.Sequence = ConnectionData.PacketSequence.NextValue;
+                }
                 packet.Header.Id = ServerId;
                 packet.Header.Iteration = 0x14;
                 packet.Header.Time = (ushort)Timers.PortalYearTicks;
 
                 if (packet.Header.Sequence >= 2u && !isNak)
+                {
                     cachedPackets.TryAdd(packet.Header.Sequence, packet);
-
-                SendPacket(packet);
-            }
-        }
-
-        private void SendPacket(ServerPacket packet)
-        {
-            packetLog.DebugFormat("[{0}] Sending packet {1}", session.LoggingIdentifier, packet.GetHashCode());
-            NetworkStatistics.S2C_Packets_Aggregate_Increment();
-
-            if (packet.Header.HasFlag(PacketHeaderFlags.EncryptedChecksum))
-            {
-                uint issacXor = ConnectionData.IssacServer.Next();
-                packetLog.DebugFormat("[{0}] Setting Issac for packet {1} to {2}", session.LoggingIdentifier, packet.GetHashCode(), issacXor);
-                packet.IssacXor = issacXor;
-            }
-
-            SendPacketRaw(packet);
-        }
-
-        private void SendPacketRaw(ServerPacket packet)
-        {
-            byte[] buffer = ArrayPool<byte>.Shared.Rent((int)(PacketHeader.HeaderSize + (packet.Data?.Length ?? 0) + (packet.Fragments.Count * PacketFragment.MaxFragementSize)));
-
-            try
-            {
-                var socket = connectionListener.Socket;
-
-                packet.CreateReadyToSendPacket(buffer, out var size);
-
-                packetLog.Debug(packet.ToString());
-
-                if (packetLog.IsDebugEnabled)
-                {
-                    var listenerEndpoint = (System.Net.IPEndPoint)socket.LocalEndPoint;
-                    var sb = new StringBuilder();
-                    sb.AppendLine(String.Format("[{5}] Sending Packet (Len: {0}) [{1}:{2}=>{3}:{4}]", size, listenerEndpoint.Address, listenerEndpoint.Port, session.EndPoint.Address, session.EndPoint.Port, session.Network.ClientId));
-                    sb.AppendLine(buffer.BuildPacketString(0, size));
-                    packetLog.Debug(sb.ToString());
                 }
-
-                try
-                {
-                    socket.SendTo(buffer, size, SocketFlags.None, session.EndPoint);
-                }
-                catch (SocketException ex)
-                {
-                    // Unhandled Exception: System.Net.Sockets.SocketException: A message sent on a datagram socket was larger than the internal message buffer or some other network limit, or the buffer used to receive a datagram into was smaller than the datagram itself
-                    // at System.Net.Sockets.Socket.UpdateStatusAfterSocketErrorAndThrowException(SocketError error, String callerName)
-                    // at System.Net.Sockets.Socket.SendTo(Byte[] buffer, Int32 offset, Int32 size, SocketFlags socketFlags, EndPoint remoteEP)
-
-                    var listenerEndpoint = (System.Net.IPEndPoint)socket.LocalEndPoint;
-                    var sb = new StringBuilder();
-                    sb.AppendLine(ex.ToString());
-                    sb.AppendLine(String.Format("[{5}] Sending Packet (Len: {0}) [{1}:{2}=>{3}:{4}]", buffer.Length, listenerEndpoint.Address, listenerEndpoint.Port, session.EndPoint.Address, session.EndPoint.Port, session.Network.ClientId));
-                    log.Error(sb.ToString());
-
-                    session.Terminate(SessionTerminationReason.SendToSocketException, null, null, ex.Message);
-                }
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(buffer, true);
+                NetworkManager.SendPacket(packet, EndPoint, ConnectionData);
             }
         }
 
@@ -875,7 +828,7 @@ namespace ACE.Server.Network
         }
 
 
-        private bool isReleased;
+        private bool isReleased;//TODO: remove this: You need enough of a clue to only do it once.
 
         /// <summary>
         /// This will empty out arrays, collections and dictionaries, and mark the object as released.
@@ -885,18 +838,52 @@ namespace ACE.Server.Network
         {
             isReleased = true;
 
+            session.ReleaseResources();
+            session = null;
+            EndPoint = null;
+            ConnectionData.ReleaseResources();
+            ConnectionData = null;
+
+            for (int i = 0; i < currentBundleLocks.Length; i++)
+            {
+                currentBundleLocks[i] = null;
+            }
             for (int i = 0; i < currentBundles.Length; i++)
+            {
+                currentBundles[i].ReleaseResources();
                 currentBundles[i] = null;
-
+            }
+            foreach (ClientPacket q in outOfOrderPackets.Values)
+            {
+                q.ReleaseResources();
+            }
             outOfOrderPackets.Clear();
+            outOfOrderPackets = null;
+            foreach (MessageBuffer q in partialFragments.Values)
+            {
+                q.ReleaseResources();
+            }
             partialFragments.Clear();
+            partialFragments = null;
+            foreach (ClientMessage q in outOfOrderFragments.Values)
+            {
+                q.ReleaseResources();
+            }
             outOfOrderFragments.Clear();
-
+            outOfOrderFragments = null;
+            foreach (ServerPacket q in cachedPackets.Values)
+            {
+                q.ReleaseResources();
+            }
             cachedPackets.Clear();
-
+            cachedPackets = null;
+            foreach (ServerPacket q in packetQueue)
+            {
+                q.ReleaseResources();
+            }
             packetQueue.Clear();
+            packetQueue = null;
 
-            ConnectionData.CryptoClient.ReleaseResources();
         }
     }
 }

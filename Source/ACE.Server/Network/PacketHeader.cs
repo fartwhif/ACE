@@ -29,6 +29,13 @@ namespace ACE.Server.Network
             Iteration   = reader.ReadUInt16();
         }
 
+        public PacketHeader() { }
+
+        public PacketHeader(BinaryReader payload)
+        {
+            Unpack(payload);
+        }
+
         public void Unpack(byte[] buffer, int offset = 0)
         {
             Sequence    =              (uint)(buffer[offset++] | (buffer[offset++] << 8) | (buffer[offset++] << 16) | (buffer[offset++] << 24));

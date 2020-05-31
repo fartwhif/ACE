@@ -1,12 +1,13 @@
+using ACE.Common;
 using System.IO;
 
 namespace ACE.Server.Network
 {
-    public class ClientMessage
+    public class ClientMessage : INeedCleanup
     {
-        public BinaryReader Payload { get; }
+        public BinaryReader Payload { get; private set; }
 
-        public MemoryStream Data { get; }
+        public MemoryStream Data { get; private set; }
 
         public uint Opcode { get; }
 
@@ -22,6 +23,14 @@ namespace ACE.Server.Network
             Data = new MemoryStream(data);
             Payload = new BinaryReader(Data);
             Opcode = Payload.ReadUInt32();
+        }
+
+        public void ReleaseResources()
+        {
+            Payload.Dispose();
+            Data.Dispose();
+            Payload = null;
+            Data = null;
         }
     }
 }

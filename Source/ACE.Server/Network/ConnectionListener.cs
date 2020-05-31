@@ -1,11 +1,12 @@
-using System;
-using System.Net;
-using System.Net.Sockets;
-using System.Text;
+using ACE.Server.Network.Managers;
 
 using log4net;
 
-using ACE.Server.Network.Managers;
+using System;
+using System.Buffers;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
 
 namespace ACE.Server.Network
 {
@@ -15,115 +16,113 @@ namespace ACE.Server.Network
         private static readonly ILog packetLog = LogManager.GetLogger(System.Reflection.Assembly.GetEntryAssembly(), "Packets");
 
         public Socket Socket { get; private set; }
-
-        public IPEndPoint ListenerEndpoint { get; private set; }
-
+        private IPEndPoint listenerEndpoint;
+        private EndPoint anyRemoteEndpoint;
         private readonly uint listeningPort;
-
-        private readonly byte[] buffer = new byte[ClientPacket.MaxPacketSize];
-
+        private byte[] buffer = null;
         private readonly IPAddress listeningHost;
+        private ManualResetEvent ReceiveComplete = new ManualResetEvent(false);
 
         public ConnectionListener(IPAddress host, uint port)
         {
-            log.DebugFormat("ConnectionListener ctor, host {0} port {1}", host, port);
-
+            log.InfoFormat("ConnectionListener ctor, host {0} port {1}", host, port);
             listeningHost = host;
             listeningPort = port;
-        }
-
-        public void Start()
-        {
-            log.DebugFormat("Starting ConnectionListener, host {0} port {1}", listeningHost, listeningPort);
-
+            anyRemoteEndpoint = new IPEndPoint(listeningHost, 0);
             try
             {
-                ListenerEndpoint = new IPEndPoint(listeningHost, (int)listeningPort);
+                log.InfoFormat("Binding ConnectionListener, host {0} port {1}", listeningHost, listeningPort);
+                listenerEndpoint = new IPEndPoint(listeningHost, (int)listeningPort);
                 Socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                 Socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-                Socket.Bind(ListenerEndpoint);
-                Listen();
+                Socket.Bind(listenerEndpoint);
             }
-            catch (Exception exception)
+            catch (Exception ex)
             {
-                log.FatalFormat("Network Socket has thrown: {0}", exception.Message);
+                log.Fatal(ex);
             }
         }
-
+        public void Start()
+        {
+            try
+            {
+                Listen();
+            }
+            catch (Exception ex)
+            {
+                log.Fatal(ex);
+            }
+        }
         public void Shutdown()
         {
-            log.DebugFormat("Shutting down ConnectionListener, host {0} port {1}", listeningHost, listeningPort);
-
+          packetLog.InfoFormat( "Shutting down ConnectionListener, host {0} port {1}", listeningHost, listeningPort);
             if (Socket != null && Socket.IsBound)
+            {
                 Socket.Close();
+            }
         }
-
         private void Listen()
         {
-            try
+            buffer = ArrayPool<byte>.Shared.Rent(Packet.MaxPacketSize);
+            while (true)
             {
-                EndPoint clientEndPoint = new IPEndPoint(listeningHost, 0);
-                Socket.BeginReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref clientEndPoint, OnDataReceieve, Socket);
-            }
-            catch (SocketException socketException)
-            {
-                log.DebugFormat("ConnectionListener.Listen() has thrown {0}: {1}", socketException.SocketErrorCode, socketException.Message);
-                Listen();
-            }
-            catch (Exception exception)
-            {
-                log.FatalFormat("ConnectionListener.Listen() has thrown: {0}", exception.Message);
+                try
+                {
+                    ReceiveComplete.Reset();
+                    Socket.BeginReceiveFrom(buffer, 0, Packet.MaxPacketSize, SocketFlags.None, ref anyRemoteEndpoint, OnDataReceieve, Socket);
+                    ReceiveComplete.WaitOne();
+                }
+                catch (SocketException sex)
+                {
+                    if ((sex.SocketErrorCode == SocketError.ConnectionAborted) ||
+                        (sex.SocketErrorCode == SocketError.ConnectionRefused) ||
+                        (sex.SocketErrorCode == SocketError.ConnectionReset) ||
+                        (sex.SocketErrorCode == SocketError.OperationAborted) &&
+                        (sex.SocketErrorCode != SocketError.MessageSize) &&
+                        (sex.SocketErrorCode != SocketError.NetworkReset))
+                    {
+                        continue;
+                    }
+                    log.Warn(sex);
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    log.Fatal(ex);
+                    break;
+                }
             }
         }
-
         private void OnDataReceieve(IAsyncResult result)
         {
-            EndPoint clientEndPoint = null;
-
+            EndPoint remoteEndPoint = null;
             try
             {
-                clientEndPoint = new IPEndPoint(listeningHost, 0);
-                int dataSize = Socket.EndReceiveFrom(result, ref clientEndPoint);
-
-                byte[] data = new byte[dataSize];
-                Buffer.BlockCopy(buffer, 0, data, 0, dataSize);
-
-                IPEndPoint ipEndpoint = (IPEndPoint)clientEndPoint;
-
-                // TO-DO: generate ban entries here based on packet rates of endPoint, IP Address, and IP Address Range
-
-                if (packetLog.IsDebugEnabled)
-                {
-                    StringBuilder sb = new StringBuilder();
-                    sb.AppendLine($"Received Packet (Len: {data.Length}) [{ipEndpoint.Address}:{ipEndpoint.Port}=>{ListenerEndpoint.Address}:{ListenerEndpoint.Port}]");
-                    sb.AppendLine(data.BuildPacketString());
-                    packetLog.Debug(sb.ToString());
-                }
-
-                var packet = new ClientPacket();
-
-                if (packet.Unpack(data))
-                    NetworkManager.ProcessPacket(this, packet, ipEndpoint);
+                remoteEndPoint = new IPEndPoint(listeningHost, 0);
+                int dataSize = Socket.EndReceiveFrom(result, ref remoteEndPoint);
+                NetworkManager.EnqueueInbound(new RawPacket { Data = new ReadOnlyMemory<byte>(buffer, 0, dataSize), Remote = (IPEndPoint)remoteEndPoint, Local = listenerEndpoint, Lease = buffer });
+                buffer = ArrayPool<byte>.Shared.Rent(Packet.MaxPacketSize);
             }
-            catch (SocketException socketException)
+            catch (SocketException sex)
             {
-                // If we get "Connection has been forcibly closed..." error, just eat the exception and continue on
-                // This gets sent when the remote host terminates the connection (on UDP? interesting...)
-                // TODO: There might be more, should keep an eye out. Logged message will help here.
-                if (socketException.SocketErrorCode == SocketError.MessageSize ||
-                    socketException.SocketErrorCode == SocketError.NetworkReset ||
-                    socketException.SocketErrorCode == SocketError.ConnectionReset)
+                if ((sex.SocketErrorCode != SocketError.ConnectionAborted) &&
+                       (sex.SocketErrorCode != SocketError.ConnectionRefused) &&
+                       (sex.SocketErrorCode != SocketError.ConnectionReset) &&
+                       (sex.SocketErrorCode != SocketError.OperationAborted) &&
+                       (sex.SocketErrorCode != SocketError.MessageSize) &&
+                       (sex.SocketErrorCode != SocketError.NetworkReset))
                 {
-                    log.DebugFormat("ConnectionListener.OnDataReceieve() has thrown {0}: {1} from client {2}", socketException.SocketErrorCode, socketException.Message, clientEndPoint != null ? clientEndPoint.ToString() : "Unknown");
-                }
-                else
-                {
-                    log.FatalFormat("ConnectionListener.OnDataReceieve() has thrown {0}: {1} from client {2}", socketException.SocketErrorCode, socketException.Message, clientEndPoint != null ? clientEndPoint.ToString() : "Unknown");
-                    return;
+                    packetLog.Warn(sex);
                 }
             }
-
-            Listen();
+            catch (Exception ex)
+            {
+               packetLog.Warn(ex);
+            }
+            finally
+            {
+                ReceiveComplete.Set();
+            }
         }
     }
 }

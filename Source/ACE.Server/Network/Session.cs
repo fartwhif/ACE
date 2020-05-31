@@ -16,14 +16,15 @@ using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.Network.GameMessages;
 using ACE.Server.Network.Managers;
+using ACE.Database.Models.Auth;
 
 namespace ACE.Server.Network
 {
-    public class Session
+    public class Session : INeedCleanup
     {
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
-        public IPEndPoint EndPoint { get; }
+        public IPEndPoint EndPoint { get; private set; }
 
         public NetworkSession Network { get; set; }
 
@@ -57,26 +58,46 @@ namespace ACE.Server.Network
         public bool DatWarnPortal;
         public bool DatWarnLanguage;
 
-        public Session(ConnectionListener connectionListener, IPEndPoint endPoint, ushort clientId, ushort serverId)
+        public Session(IPEndPoint endPoint, Account account, ushort clientId, ushort serverId)
         {
+            SetAccount(account);
+            State = SessionState.AuthLoginRequest;
             EndPoint = endPoint;
-            Network = new NetworkSession(this, connectionListener, clientId, serverId);
+            Network = new NetworkSession(this, clientId, serverId, endPoint);
         }
 
+        public void ReleaseResources()
+        {
+            EndPoint = null;
+            Network?.ReleaseResources();
+            PendingTermination?.ReleaseResources();
+            BootSessionReason = null;
+            //TODO: clean for characters initiated here
+            //foreach (Character q in Characters)
+            //{
+            //    q.Dispose();
+            //}
+            Characters.Clear();
+            //Player?.Dispose();//TODO: clean for player initiated here
+        }
 
         private bool CheckState(ClientPacket packet)
         {
             if (packet.Header.HasFlag(PacketHeaderFlags.LoginRequest) && State != SessionState.AuthLoginRequest)
+            {
                 return false;
-
+            }
             if (packet.Header.HasFlag(PacketHeaderFlags.ConnectResponse) && State != SessionState.AuthConnectResponse)
+            {
                 return false;
-
+            }
             if (packet.Header.HasFlag(PacketHeaderFlags.AckSequence | PacketHeaderFlags.TimeSync | PacketHeaderFlags.EchoRequest | PacketHeaderFlags.Flow) && State == SessionState.AuthLoginRequest)
+            {
                 return false;
-
+            }
             return true;
         }
+
 
         public void ProcessPacket(ClientPacket packet)
         {
@@ -86,12 +107,12 @@ namespace ACE.Server.Network
             Network.ProcessPacket(packet);
         }
 
-
-        /// <summary>
-        /// This will send outgoing packets as well as the final logoff message.
-        /// </summary>
         public void TickOutbound()
         {
+            if (Network == null)
+            {
+                return;
+            }
             // Check if the player has been booted
             if (PendingTermination != null)
             {
@@ -100,14 +121,16 @@ namespace ACE.Server.Network
                     State = SessionState.TerminationStarted;
                     Network.Update(); // boot messages may need sending
                     if (DateTime.UtcNow.Ticks > PendingTermination.TerminationEndTicks)
+                    {
                         PendingTermination.TerminationStatus = SessionTerminationPhase.SessionWorkCompleted;
+                    }
                 }
                 return;
             }
-
             if (State == SessionState.TerminationStarted)
+            {
                 return;
-
+            }
             // Checks if the session has stopped responding.
             if (DateTime.UtcNow.Ticks >= Network.TimeoutTick)
             {
@@ -115,13 +138,13 @@ namespace ACE.Server.Network
                 Terminate(SessionTerminationReason.NetworkTimeout);
                 return;
             }
-
             Network.Update();
-
             // Live server seemed to take about 6 seconds. 4 seconds is nice because it has smooth animation, and saves the user 2 seconds every logoff
             // This could be made 0 for instant logoffs.
             if (logOffRequestTime != DateTime.MinValue && logOffRequestTime.AddSeconds(6) <= DateTime.UtcNow)
+            {
                 SendFinalLogOffMessages();
+            }
 
             // This section deviates from known retail pcaps/behavior, but appears to be the least harmful way to work around something that seemingly didn't occur to players using ThwargLauncher connecting to retail servers.
             // In order to prevent the launcher from thinking the session is dead, we will send a Ping Response every 100 seconds, this will in effect make the client appear active to the launcher and allow players to create characters in peace.
@@ -139,12 +162,11 @@ namespace ACE.Server.Network
                 lastCharacterSelectPingReply = DateTime.MinValue;
         }
 
-
-        public void SetAccount(uint accountId, string account, AccessLevel accountAccesslevel)
+        public void SetAccount(Account account)
         {
-            AccountId = accountId;
-            Account = account;
-            AccessLevel = accountAccesslevel;
+            AccountId = account.AccountId;
+            Account = account.AccountName;
+            AccessLevel = (AccessLevel)account.AccessLevel;
         }
 
         public void UpdateCharacters(IEnumerable<Character> characters)
@@ -209,7 +231,9 @@ namespace ACE.Server.Network
         {
             // If we still exist on a landblock, we can't exit yet.
             if (Player.CurrentLandblock != null)
+            {
                 return;
+            }
 
             logOffRequestTime = DateTime.MinValue;
 
@@ -218,7 +242,9 @@ namespace ACE.Server.Network
             // What that means is, we could end up with Character changes after the Character has been saved from the initial LogOff request.
             // To make sure we commit these additional changes (if any), we check again here
             if (Player.CharacterChangesDetected)
+            {
                 Player.SaveCharacterToDatabase();
+            }
 
             Player = null;
 
@@ -236,11 +262,13 @@ namespace ACE.Server.Network
 
             State = SessionState.AuthConnected;
         }
-
-        public void Terminate(SessionTerminationReason reason, GameMessage message = null, ServerPacket packet = null, string extraReason = "")
+        public void Terminate(SessionTerminationReason reason, GameMessage message = null, ServerPacket packet = null, string extraReason = "", Action TerminationCompleted = null)
         {
+            if (PendingTermination != null)
+            {
+                return;
+            }
             // TODO: graceful SessionTerminationReason.AccountBooted handling
-
             if (packet != null)
             {
                 Network.EnqueueSend(packet);
@@ -249,49 +277,53 @@ namespace ACE.Server.Network
             {
                 Network.EnqueueSend(message);
             }
+            Action tc = (TerminationCompleted == null) ? new Action(() => { NetworkManager.RemoveSession(this); }) : TerminationCompleted;
             PendingTermination = new SessionTerminationDetails()
             {
                 ExtraReason = extraReason,
-                Reason = reason
+                Reason = reason,
+                FinalTerminationAction = tc
             };
         }
-
         public void DropSession()
         {
-            if (PendingTermination == null || PendingTermination.TerminationStatus != SessionTerminationPhase.SessionWorkCompleted) return;
-
+            if (PendingTermination == null || PendingTermination.TerminationStatus != SessionTerminationPhase.SessionWorkCompleted)
+            {
+                return;
+            }
             if (PendingTermination.Reason != SessionTerminationReason.PongSentClosingConnection)
             {
-                var reason = PendingTermination.Reason;
-                string reas = (reason != SessionTerminationReason.None) ? $", Reason: {reason.GetDescription()}" : "";
-                if (!string.IsNullOrWhiteSpace(PendingTermination.ExtraReason))
-                {
-                    reas = reas + ", " + PendingTermination.ExtraReason;
-                }
+                string msg = FormatDetailedSessionId(EndPoint, Network?.ClientId ?? 0, Account, Player, "dropped", PendingTermination.Reason, PendingTermination.ExtraReason);
                 if (WorldManager.WorldStatus == WorldManager.WorldStatusState.Open)
-                    log.Info($"Session {Network?.ClientId}\\{EndPoint} dropped. Account: {Account}, Player: {Player?.Name}{reas}");
+                {
+                    log.Info(msg);
+                }
                 else
-                    log.Debug($"Session {Network?.ClientId}\\{EndPoint} dropped. Account: {Account}, Player: {Player?.Name}{reas}");
+                {
+                    log.Debug(msg);
+                }
             }
-
             if (Player != null)
             {
+                PendingTermination.FinalTerminationDelay = TimeSpan.FromSeconds(7);
                 LogOffPlayer();
-
                 // We don't want to set the player to null here. Because the player is still on the network, it may still enqueue work onto it's session.
                 // Some network message objects will reference session.Player in their construction. If we set Player to null here, we'll throw exceptions in those cases.
-
                 // At this point, if the player was on a landblock, they'll still exist on that landblock until the logout animation completes (~6s).
             }
-
-            NetworkManager.RemoveSession(this);
-
-            // This is a temp fix to mark the Session.Network portion of the Session as released
-            // What this means is that we will release any network related resources, as well as avoid taking on additional resources
-            // In the future, we should set Network to null and funnel Network communication through Session, instead of accessing Session.Network directly.
-            Network.ReleaseResources();
         }
 
+        public static string FormatDetailedSessionId(IPEndPoint EndPoint, ushort ClientId, string AccountName, Player Player = null, string verb = null, SessionTerminationReason reason = SessionTerminationReason.None, string extraReason = null)
+        {
+            string reas = (reason != SessionTerminationReason.None) ? $", Reason: {reason.GetDescription()}" : "";
+            if (!string.IsNullOrWhiteSpace(extraReason))
+            {
+                reas = reas + ", " + extraReason;
+            }
+            string ver = (verb != null) ? $" {verb}. " : ", ";
+            string plr = (Player != null) ? $", Player: {Player.Name}" : "";
+            return $"Session {ClientId}\\{EndPoint}{ver}Account: {AccountName}{plr}{reas}";
+        }
 
         public void SendCharacterError(CharacterError error)
         {
@@ -303,8 +335,10 @@ namespace ACE.Server.Network
         /// </summary>
         public void WorldBroadcast(string broadcastMessage)
         {
-            var worldBroadcastMessage = new GameMessageSystemChat(broadcastMessage, ChatMessageType.WorldBroadcast);
+            GameMessageSystemChat worldBroadcastMessage = new GameMessageSystemChat(broadcastMessage, ChatMessageType.WorldBroadcast);
             Network.EnqueueSend(worldBroadcastMessage);
         }
+
+
     }
 }

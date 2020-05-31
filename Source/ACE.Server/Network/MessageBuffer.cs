@@ -1,10 +1,11 @@
+using ACE.Common;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
 namespace ACE.Server.Network
 {
-    internal class MessageBuffer
+    internal class MessageBuffer : INeedCleanup
     {
         private List<ClientPacketFragment> fragments = new List<ClientPacketFragment>();
 
@@ -41,6 +42,16 @@ namespace ACE.Server.Network
             }
             stream.Seek(0, SeekOrigin.Begin);
             return new ClientMessage(stream);
+        }
+
+        public void ReleaseResources()
+        {
+            for (int i = 0; i < fragments.Count; i++)
+            {
+                fragments[i].ReleaseResources();
+                fragments[i] = null;
+            }
+            fragments = null;
         }
     }
 }

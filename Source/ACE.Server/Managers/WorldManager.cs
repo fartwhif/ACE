@@ -43,6 +43,11 @@ namespace ACE.Server.Managers
 
         public static WorldStatusState WorldStatus { get; private set; } = WorldStatusState.Closed;
 
+        /// <summary>
+        /// Handles ClientMessages in InboundMessageManager
+        /// </summary>
+        public static readonly ActionQueue InboundMessageQueue = new ActionQueue();
+
         private static readonly ActionQueue actionQueue = new ActionQueue();
         public static readonly DelayManager DelayManager = new DelayManager();
 
@@ -345,9 +350,9 @@ namespace ACE.Server.Managers
                 PlayerManager.Tick();
                 ServerPerformanceMonitor.RegisterEventEnd(ServerPerformanceMonitor.MonitorType.PlayerManager_Tick);
 
-                ServerPerformanceMonitor.RestartEvent(ServerPerformanceMonitor.MonitorType.NetworkManager_InboundClientMessageQueueRun);
-                NetworkManager.InboundMessageQueue.RunActions();
-                ServerPerformanceMonitor.RegisterEventEnd(ServerPerformanceMonitor.MonitorType.NetworkManager_InboundClientMessageQueueRun);
+                //ServerPerformanceMonitor.RestartEvent(ServerPerformanceMonitor.MonitorType.NetworkManager_InboundClientMessageQueueRun);
+                //NetworkManager.InboundMessageQueue.RunActions();
+                //ServerPerformanceMonitor.RegisterEventEnd(ServerPerformanceMonitor.MonitorType.NetworkManager_InboundClientMessageQueueRun);
 
                 // This will consist of PlayerEnterWorld actions, as well as other game world actions that require thread safety
                 ServerPerformanceMonitor.RestartEvent(ServerPerformanceMonitor.MonitorType.actionQueue_RunActions);

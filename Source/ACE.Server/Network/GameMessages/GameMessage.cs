@@ -1,6 +1,8 @@
-﻿namespace ACE.Server.Network.GameMessages
+using ACE.Common;
+
+namespace ACE.Server.Network.GameMessages
 {
-    public abstract class GameMessage
+    public abstract class GameMessage : INeedCleanup
     {
         public GameMessageOpcode Opcode { get; private set; }
 
@@ -22,6 +24,14 @@
 
             if (Opcode != GameMessageOpcode.None)
                 Writer.Write((uint)Opcode);
+        }
+
+        public void ReleaseResources()
+        {
+            Writer.Dispose();
+            Data.Dispose();
+            Writer = null;
+            Data = null;
         }
     }
 }

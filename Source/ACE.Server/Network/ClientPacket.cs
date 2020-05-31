@@ -1,54 +1,68 @@
+
 using System;
 using System.IO;
 
 using log4net;
 
 using ACE.Common.Cryptography;
+using ACE.Common;
 
 namespace ACE.Server.Network
 {
-    public class ClientPacket : Packet
+    public class ClientPacket : Packet, INeedCleanup
     {
         private static readonly ILog packetLog = LogManager.GetLogger(System.Reflection.Assembly.GetEntryAssembly(), "Packets");
-
-        public static int MaxPacketSize { get; } = 1024;
-
         public BinaryReader DataReader { get; private set; }
-        public PacketHeaderOptional HeaderOptional { get; } = new PacketHeaderOptional();
-
-        public bool Unpack(byte[] data)
+        public PacketHeaderOptional HeaderOptional { get; private set; }
+        public bool SuccessfullyParsed { get; private set; } = false;
+        public bool? ValidCRC { get; private set; } = null;
+        public ClientPacket(ReadOnlyMemory<byte> data)
         {
-            try
+            //data = NetworkSyntheticTesting.SyntheticCorruption_C2S(data);
+            ParsePacketData(data);
+            if (SuccessfullyParsed)
             {
-                if (data.Length < PacketHeader.HeaderSize)
-                    return false;
-
-                Header.Unpack(data);
-
-                if (Header.Size > data.Length - PacketHeader.HeaderSize)
-                    return false;
-
-                Data = new MemoryStream(data, PacketHeader.HeaderSize, Header.Size, false, true);
-                DataReader = new BinaryReader(Data);
-                HeaderOptional.Unpack(DataReader, Header);
-
-                if (!HeaderOptional.IsValid)
-                    return false;
-
-                if (!ReadFragments())
-                    return false;
-
-                return true;
-            }
-            catch (Exception ex)
-            {
-                packetLog.Error("Invalid packet data", ex);
-
-                return false;
+                ReadFragments();
             }
         }
 
-        private bool ReadFragments()
+        private unsafe void ParsePacketData(ReadOnlyMemory<byte> data)
+        {
+            fixed (byte* pBuffer = &data.Span[0])
+            {
+                try
+                {
+                    using (UnmanagedMemoryStream stream = new UnmanagedMemoryStream(pBuffer, data.Length))
+                    {
+                        //TO-DO: use new pattern instead
+                        using (BinaryReader reader = new BinaryReader(stream))
+                        {
+                            Header = new PacketHeader(reader);
+                            if (Header.Size > data.Length - reader.BaseStream.Position)
+                            {
+                                SuccessfullyParsed = false;
+                                return;
+                            }
+                            Data = new MemoryStream(reader.ReadBytes(Header.Size), 0, Header.Size, false, true);
+                            DataReader = new BinaryReader(Data);
+                            HeaderOptional = new PacketHeaderOptional(DataReader, Header);
+                            if (!HeaderOptional.IsValid)
+                            {
+                                SuccessfullyParsed = false;
+                                return;
+                            }
+                        }
+                    }
+                    SuccessfullyParsed = true;
+                }
+                catch (Exception ex)
+                {
+                    SuccessfullyParsed = false;
+                    //packetLogger.Error(this, "Invalid packet data", ex);
+                }
+            }
+        }
+        private void ReadFragments()
         {
             if (Header.HasFlag(PacketHeaderFlags.BlobFragments))
             {
@@ -56,20 +70,16 @@ namespace ACE.Server.Network
                 {
                     try
                     {
-                        var fragment = new ClientPacketFragment();
-                        if (!fragment.Unpack(DataReader)) return false;
-
-                        Fragments.Add(fragment);
+                        Fragments.Add(new ClientPacketFragment(DataReader));
                     }
                     catch (Exception)
                     {
                         // corrupt packet
-                        return false;
+                        SuccessfullyParsed = false;
+                        break;
                     }
                 }
             }
-
-            return true;
         }
 
         private uint? _fragmentChecksum;
@@ -126,6 +136,7 @@ namespace ACE.Server.Network
                 return _payloadChecksum.Value;
             }
         }
+
         public bool VerifyCRC(CryptoSystem fq)
         {
             if (Header.HasFlag(PacketHeaderFlags.EncryptedChecksum))

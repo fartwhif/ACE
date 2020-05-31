@@ -2,7 +2,7 @@ using System;
 
 namespace ACE.Common.Cryptography
 {
-    public class ISAAC
+    public class ISAAC : INeedCleanup
     {
         private uint offset;
 
@@ -19,22 +19,14 @@ namespace ACE.Common.Cryptography
             Initialize(seed);
         }
 
-        private bool isReleased;
-
         public void ReleaseResources()
         {
-            isReleased = true;
             mm = null;
             randRsl = null;
         }
 
         public uint Next()
         {
-            if (isReleased)
-            {
-                return 0;
-            }
-
             var issacValue = randRsl[offset];
             if (offset > 0)
                 offset--;

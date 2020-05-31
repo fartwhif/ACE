@@ -1,5 +1,8 @@
 using System;
+using System.Buffers;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using ACE.Entity;
 using ACE.Server.Network.Enum;
 
@@ -7,6 +10,65 @@ namespace ACE.Server.Network
 {
     public static class Extensions
     {
+        public static ulong ToSessionId(this IPEndPoint endPoint)
+        {
+            if (endPoint.AddressFamily != AddressFamily.InterNetwork)
+            {
+                return 0;
+            }
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(8);
+            Span<byte> sessionIdBytes = new Span<byte>(buffer, 0, 8);
+            Span<byte> hiWord = sessionIdBytes.Slice(0, 4);
+            Span<byte> loWord = sessionIdBytes.Slice(4, 4);
+            try
+            {
+                int bytesWritten = -1;
+                bool success = endPoint.Address.TryWriteBytes(hiWord, out bytesWritten);
+                if (!success || bytesWritten != 4)
+                {
+                    throw new Exception("could not convert ip address to bytes");
+                }
+                if (!BitConverter.TryWriteBytes(loWord, endPoint.Port))
+                {
+                    throw new Exception("could not convert port to bytes");
+                }
+                ulong sessionId = BitConverter.ToUInt64(sessionIdBytes);
+                return sessionId;
+            }
+            finally
+            {
+                loWord = null;
+                hiWord = null;
+                sessionIdBytes = null;
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+        public static IPEndPoint SessionIdToEndPoint(ulong sessionId)
+        {
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(8);
+            Span<byte> sessionIdBytes = new Span<byte>(buffer, 0, 8);
+            Span<byte> hiWord = sessionIdBytes.Slice(0, 4);
+            Span<byte> loWord = sessionIdBytes.Slice(4, 4);
+            try
+            {
+                if (BitConverter.TryWriteBytes(sessionIdBytes, sessionId))
+                {
+                    return null;
+                }
+                int port = BitConverter.ToInt32(loWord);
+                IPAddress ipaddr = new IPAddress(hiWord);
+                IPEndPoint endp = new IPEndPoint(ipaddr, port);
+                return endp;
+            }
+            finally
+            {
+                loWord = null;
+                hiWord = null;
+                sessionIdBytes = null;
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
         private static uint CalculatePadMultiple(uint length, uint multiple) { return multiple * ((length + multiple - 1u) / multiple) - length; }
 
         public static void WriteString16L(this BinaryWriter writer, string data)

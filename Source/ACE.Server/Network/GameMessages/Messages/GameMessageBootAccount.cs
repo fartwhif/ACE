@@ -10,7 +10,9 @@ namespace ACE.Server.Network.GameMessages.Messages
             : base(GameMessageOpcode.AccountBoot, GameMessageGroup.UIQueue)
         {
             if (Reason != null)
-                Writer.WriteString16L(Reason);
+            {
+                Writer.WriteString16L($" - {Reason}");
+            }
         }
     }
 }

@@ -1,12 +1,12 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-
+using ACE.Common;
 using ACE.Common.Cryptography;
 
 namespace ACE.Server.Network
 {
-    public class PacketHeaderOptional
+    public class PacketHeaderOptional : INeedCleanup
     {
         public uint Size { get; private set; }
 
@@ -20,6 +20,11 @@ namespace ACE.Server.Network
 
         private PacketHeader Header { get; set; }
         private MemoryStream headerBytes = new MemoryStream();
+
+        public PacketHeaderOptional(BinaryReader payload, PacketHeader header)
+        {
+            Unpack(payload, header);
+        }
 
         public void Unpack(BinaryReader reader, PacketHeader header)
         {
@@ -153,6 +158,14 @@ namespace ACE.Server.Network
                 nice += $" AckSeq: {AckSequence}";
             }
             return nice.Trim();
+        }
+
+        public void ReleaseResources()
+        {
+            RetransmitData.Clear();
+            RetransmitData = null;
+            headerBytes.Dispose();
+            headerBytes = null;
         }
     }
 }

@@ -239,8 +239,11 @@ namespace ACE.Server
             log.Info("Initializing InboundMessageManager...");
             InboundMessageManager.Initialize();
 
-            log.Info("Initializing SocketManager...");
-            SocketManager.Initialize();
+            //log.Info("Initializing SocketManager...");
+            //SocketManager.Initialize();
+
+            log.Info("Initializing NetworkManager...");
+            NetworkManager.Initialize();
 
             log.Info("Initializing WorldManager...");
             WorldManager.Initialize();

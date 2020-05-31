@@ -1,11 +1,12 @@
 using System;
-
+using ACE.Common;
 using ACE.Common.Cryptography;
+using ACE.Server.Entity;
 using ACE.Server.Network.Sequence;
 
 namespace ACE.Server.Network
 {
-    public class SessionConnectionData
+    public class SessionConnectionData : INeedCleanup
     {
         /// <summary>
         /// random shared 64 bit secret
@@ -55,7 +56,16 @@ namespace ACE.Server.Network
         /// </summary>
         public ISAAC IssacServer = null;
 
-        public SessionConnectionData()
+        /// <summary>
+        /// This is just a wrapper around Timers.PortalYearTicks.<para />
+        /// In the future, we may want to consider removing this and referencing Timers.PortalYearTicks directly.
+        /// </summary>
+        public double ServerTime => Timers.PortalYearTicks;
+
+
+        public ushort ClientId { get; }
+
+        public SessionConnectionData(ushort clientId)
         {
             // since the network processor is single threaded this can instantiate the .NET Core System.Random class without locking
             Random rand = new Random();
@@ -76,7 +86,10 @@ namespace ACE.Server.Network
             ConnectionCookie = BitConverter.ToUInt64(bytes, 0);
 
             PacketSequence = new UIntSequence(false);
+            ClientId = clientId;
         }
+
+
 
         /// <summary>
         /// Discard the references to the byte arrays so the memory can be freed up by GC.
@@ -90,7 +103,18 @@ namespace ACE.Server.Network
 
         public override string ToString()
         {
-            return $"Seeds: [Client {BitConverter.ToString(ClientSeed).Replace("-","")}, Server {BitConverter.ToString(ServerSeed).Replace("-", "")}]";
+            return $"Seeds: [Client {BitConverter.ToString(ClientSeed).Replace("-", "")}, Server {BitConverter.ToString(ServerSeed).Replace("-", "")}]";
+        }
+
+        public void ReleaseResources()
+        {
+            ClientSeed = null;
+            ServerSeed = null;
+            PacketSequence = null;
+            CryptoClient.ReleaseResources();
+            IssacServer.ReleaseResources();
+            CryptoClient = null;
+            IssacServer = null;
         }
     }
 }

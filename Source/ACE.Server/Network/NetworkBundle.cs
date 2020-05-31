@@ -1,10 +1,11 @@
+using ACE.Common;
 using ACE.Server.Network.GameMessages;
 using System.Collections.Generic;
 
 namespace ACE.Server.Network
 {
 
-    internal class NetworkBundle
+    internal class NetworkBundle: INeedCleanup
     {
         private bool propChanged;
 
@@ -60,6 +61,16 @@ namespace ACE.Server.Network
         public GameMessage Dequeue()
         {
             return messages.Dequeue();
+        }
+
+        public void ReleaseResources()
+        {
+            foreach (var msg in messages)
+            {
+                msg.ReleaseResources();
+            }
+            messages.Clear();
+            messages = null;
         }
     }
 }
