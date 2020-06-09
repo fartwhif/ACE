@@ -77,9 +77,9 @@ namespace ACE.Server.Network
                     if ((sex.SocketErrorCode == SocketError.ConnectionAborted) ||
                         (sex.SocketErrorCode == SocketError.ConnectionRefused) ||
                         (sex.SocketErrorCode == SocketError.ConnectionReset) ||
-                        (sex.SocketErrorCode == SocketError.OperationAborted) &&
-                        (sex.SocketErrorCode != SocketError.MessageSize) &&
-                        (sex.SocketErrorCode != SocketError.NetworkReset))
+                        (sex.SocketErrorCode == SocketError.OperationAborted) ||
+                        (sex.SocketErrorCode == SocketError.MessageSize) ||
+                        (sex.SocketErrorCode == SocketError.NetworkReset))
                     {
                         continue;
                     }
