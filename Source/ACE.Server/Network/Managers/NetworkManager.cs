@@ -1,26 +1,22 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
+using ACE.Common;
+using ACE.Database;
+using ACE.Database.Models.Auth;
+using ACE.Entity.Enum;
+using ACE.Server.Entity;
+using ACE.Server.Managers;
+using ACE.Server.Network.Connection;
+using ACE.Server.Network.Enum;
+using ACE.Server.Network.GameMessages.Messages;
+using ACE.Server.Network.Handlers;
+using ACE.Server.Network.Packets;
 
 using log4net;
 
-using ACE.Common;
-using ACE.Server.Entity;
-using ACE.Server.Entity.Actions;
-using ACE.Server.Managers;
-using ACE.Server.Network.Packets;
-using ACE.Server.Network.Handlers;
-using ACE.Server.Network.Enum;
+using System;
 using System.Collections.Concurrent;
-using System.Net.Sockets;
-using System.Buffers;
-using ACE.Database.Models.Auth;
-using ACE.Server.Network.GameMessages.Messages;
-using ACE.Entity.Enum;
-using ACE.Database;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
 
 namespace ACE.Server.Network.Managers
 {
@@ -39,13 +35,10 @@ namespace ACE.Server.Network.Managers
         public static uint DefaultSessionTimeout = ConfigManager.Config.Server.Network.DefaultSessionTimeout;
 
         public const ushort ServerId = 0xB;
-        private static PacketQueue InboundQueue { get; set; }
-        private static PacketQueue OutboundQueue { get; set; }
         private static Random ClientIdWheel { get; set; } = new Random();
         private static ConcurrentDictionary<ulong, Session> Sessions { get; set; } = new ConcurrentDictionary<ulong, Session>();
-        private static ConnectionListener listener = null;
-        private static Socket SendingSocket = null;
-        private static readonly ManualResetEvent SendComplete = new ManualResetEvent(true);
+        private static SocketManager SocketManager;
+        private static Connection.Queue<ArrayPoolNetBuffer> OutboundQueue;
 
         public static void Initialize()
         {
@@ -58,29 +51,12 @@ namespace ACE.Server.Network.Managers
             {
                 host = IPAddress.Any;
             }
-            InboundQueue = new PacketQueue("Net Inbound Queue");
-            OutboundQueue = new PacketQueue("Net Outbound Queue");
-            listener = new ConnectionListener(host, ConfigManager.Config.Server.Network.Port);
-            new Thread(new ThreadStart(() => { listener.Start(); })) { Name = $"Net {listener.Socket.LocalEndPoint} Listener" }.Start();
-            SendingSocket = listener.Socket;
-            InboundQueue.OnNextPacket += InboundQueue_OnNextPacket;
-            OutboundQueue.OnNextPacket += OutboundQueue_OnNextPacket;
+            SocketManager = new SocketManager();
+            SocketManager.Initialize();
+            SocketManager.Listen("Inbound Net Listener", true, InboundQueue_OnNextPacket);
+            OutboundQueue = new Connection.Queue<ArrayPoolNetBuffer>("Outbound Net Queue", OutboundQueue_Next);
         }
-        public static void SendPacket(ServerPacket packet, IPEndPoint EndPoint, SessionConnectionData ConnectionData = null)
-        {
-            if ((packet.Header.Flags & PacketHeaderFlags.EncryptedChecksum) != 0 && packet.IssacXor == 0)
-            {
-                if (ConnectionData == null)
-                {
-                    throw new ArgumentNullException("SendPacket was supplied a virgin encrypted checksum packet without session connection data.");
-                }
-                uint issacXor = ConnectionData.IssacServer.Next();
-                packet.IssacXor = issacXor;
-            }
-            byte[] buffer = ArrayPool<byte>.Shared.Rent((int)(PacketHeader.HeaderSize + (packet.Data?.Length ?? 0) + (packet.Fragments.Count * PacketFragment.MaxFragementSize)));
-            packet.CreateReadyToSendPacket(buffer, out int size);
-            OutboundQueue.AddItem(new RawPacket() { Data = new ReadOnlyMemory<byte>(buffer, 0, size), Remote = EndPoint, Lease = buffer });
-        }
+
         public static int GetSessionCount()
         {
             return Sessions.Count;
@@ -106,7 +82,7 @@ namespace ACE.Server.Network.Managers
         public static void Shutdown()
         {
             OutboundQueue.Shutdown();
-            InboundQueue.Shutdown();
+            SocketManager.Stop();
         }
 
         public static int DoSessionWork()
@@ -171,39 +147,28 @@ namespace ACE.Server.Network.Managers
             Sessions.Remove(session.Network.EndPoint.ToSessionId(), out Session xSession);
             xSession.ReleaseResources();
         }
-        public static void EnqueueInbound(RawPacket pkt)
+
+        public static void SendPacket(ServerPacket packet, IPEndPoint EndPoint, SessionConnectionData ConnectionData = null)
         {
-            InboundQueue.AddItem(pkt);
+            if ((packet.Header.Flags & PacketHeaderFlags.EncryptedChecksum) != 0 && packet.IssacXor == 0)
+            {
+                if (ConnectionData == null)
+                {
+                    throw new ArgumentNullException("SendPacket was supplied a virgin encrypted checksum packet without session connection data.");
+                }
+                uint issacXor = ConnectionData.IssacServer.Next();
+                packet.IssacXor = issacXor;
+            }
+            OutboundQueue.AddItem(new ArrayPoolNetBuffer(packet) { Peer = EndPoint });
         }
-        private static void OutboundQueue_OnNextPacket(RawPacket pkt)
+        private static void OutboundQueue_Next(ArrayPoolNetBuffer rp)
         {
-            try
-            {
-                SendComplete.Reset();
-                SendingSocket.BeginSendTo(pkt.Lease, 0, pkt.Data.Length, SocketFlags.None, pkt.Remote, OnDataSend, SendingSocket);
-                SendComplete.WaitOne();
-                NetworkStatistics.S2C_Packets_Aggregate_Increment();
-            }
-            finally
-            {
-                SendComplete.Set();
-            }
+            SocketManager.listener.Send(rp, true);
+            NetworkStatistics.S2C_Packets_Aggregate_Increment();
         }
-        private static void OnDataSend(IAsyncResult result)
+        private static void InboundQueue_OnNextPacket(ArrayPoolNetBuffer rPkt)
         {
-            try
-            {
-                SendingSocket.EndSendTo(result);
-            }
-            finally
-            {
-                SendComplete.Set();
-            }
-        }
-        private static void InboundQueue_OnNextPacket(RawPacket rPkt)
-        {
-            IPEndPoint local = rPkt.Local;
-            IPEndPoint remote = rPkt.Remote;
+            IPEndPoint remote = (IPEndPoint)rPkt.Peer;
             if (rPkt.Data.Length < 20)
             {
                 return;
@@ -218,7 +183,6 @@ namespace ACE.Server.Network.Managers
             {
                 return;
             }
-           
             if (packet.Header.Flags == PacketHeaderFlags.LoginRequest)
             {
                 PacketInboundLoginRequest loginRequest = new PacketInboundLoginRequest(packet);
@@ -252,6 +216,12 @@ namespace ACE.Server.Network.Managers
                         {
                             if (session.State != SessionState.TerminationStarted)
                             {
+                                // 2 second debounce: client spams login packets until it gets a ConnectRequest message and sometimes extra login packets arrive here that were sent beforehand
+                                if (session.EndPoint.Equals(remote) && session.State == SessionState.AuthConnected && session.Age.Elapsed.TotalSeconds < 2)
+                                {
+                                    packetLog.Warn("debouncing login packet");
+                                    return;
+                                }
                                 session.Terminate(SessionTerminationReason.AccountLoggedIn, new GameMessageBootAccount(SessionTerminationReasonHelper.GetDescription(SessionTerminationReason.AccountLoggedIn)));
                             }
                         }

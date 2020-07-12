@@ -17,6 +17,7 @@ using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.Network.GameMessages;
 using ACE.Server.Network.Managers;
 using ACE.Database.Models.Auth;
+using System.Diagnostics;
 
 namespace ACE.Server.Network
 {
@@ -32,6 +33,7 @@ namespace ACE.Server.Network
 
         public SessionState State { get; set; }
 
+        public Stopwatch Age { get; private set; } = Stopwatch.StartNew();
 
         public uint AccountId { get; private set; }
 

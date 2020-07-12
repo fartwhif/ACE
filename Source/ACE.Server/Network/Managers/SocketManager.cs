@@ -1,27 +1,42 @@
-using System;
-using System.Collections.Generic;
-using System.Net;
+using ACE.Common;
+using ACE.Server.Network.Connection;
 
 using log4net;
 
-using ACE.Common;
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
 
 namespace ACE.Server.Network.Managers
 {
-    public static class SocketManager
+    public class SocketManager
     {
+        public bool IsListening => _IsListening();
+        public Socket Socket => listener.sock;
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+        private CancellationTokenSource ListenerCanceller;
+        internal ArrayPoolConnectionProvider listener;
+        private IPEndPoint endp = null;
+        private string strEndp = string.Empty;
+        private Thread ListenThread = null;
 
-        private static ConnectionListener[] listeners;
-
-        public static void Initialize()
+        public void Initialize()
+        {
+            IPAddress host = GetConfiguredHost();
+            endp = new IPEndPoint(host, (int)ConfigManager.Config.Server.Network.Port);
+            strEndp = $"{host}:{ConfigManager.Config.Server.Network.Port}";
+            ListenerCanceller = new CancellationTokenSource();
+            listener = new ArrayPoolConnectionProvider(endp);
+            log.Info($"Bound to host: {strEndp}");
+        }
+        private IPAddress GetConfiguredHost()
         {
             var hosts = new List<IPAddress>();
-
             try
             {
                 var splits = ConfigManager.Config.Server.Network.Host.Split(",");
-
                 foreach (var split in splits)
                     hosts.Add(IPAddress.Parse(split));
             }
@@ -32,20 +47,68 @@ namespace ACE.Server.Network.Managers
                 hosts.Clear();
                 hosts.Add(IPAddress.Any);
             }
-
-            listeners = new ConnectionListener[hosts.Count * 2];
-
-            for (int i = 0; i < hosts.Count; i++)
+            if (hosts.Count > 1)
             {
-                listeners[(i * 2) + 0] = new ConnectionListener(hosts[i], ConfigManager.Config.Server.Network.Port);
-                log.Info($"Binding ConnectionListener to {hosts[i]}:{ConfigManager.Config.Server.Network.Port}");
-
-                listeners[(i * 2) + 1] = new ConnectionListener(hosts[i], ConfigManager.Config.Server.Network.Port + 1);
-                log.Info($"Binding ConnectionListener to {hosts[i]}:{ConfigManager.Config.Server.Network.Port + 1}");
-
-                listeners[(i * 2) + 0].Start();
-                listeners[(i * 2) + 1].Start();
+                log.Warn("Multiple hosts configured. Multiple hosts are not supported. Using first host.");
             }
+            if (hosts.Count < 1)
+            {
+                string err = "A host must be configured.  See setup documentation.";
+                log.Fatal(err);
+                throw new Exception(err);
+            }
+            return hosts[0];
+        }
+        private bool _IsListening()
+        {
+            if (listener == null)
+            {
+                throw new Exception("not initialized");
+            }
+            return listener.IsListening;
+        }
+        public void Stop()
+        {
+            if (listener == null)
+            {
+                throw new Exception("not initialized");
+            }
+            if (!listener.IsListening)
+            {
+                throw new Exception("not listening");
+            }
+            ListenerCanceller.Cancel();
+            listener.DoneSignal.WaitOne();
+            log.Info($"Stopped listening");
+        }
+        public void Listen(string ListenThreadName, bool queue, Connection.Queue<ArrayPoolNetBuffer>.OutputHandler dequeuedHandler, Action<ArrayPoolNetBuffer> directHandler = null)
+        {
+            if (listener == null)
+            {
+                throw new Exception("not initialized");
+            }
+            if (listener.IsListening)
+            {
+                throw new Exception("already listening");
+            }
+            ListenThread = new Thread(new ParameterizedThreadStart(BlockingListenThread))
+            {
+                Name = ListenThreadName
+            };
+            ListenThread.Start(new object[] { ListenThreadName, queue, dequeuedHandler, directHandler });
+        }
+        private void BlockingListenThread(object state)
+        {
+            object[] st = (object[])state;
+
+            string ListenThreadName = (string)st[0];
+            bool queue = (bool)st[1];
+            Connection.Queue<ArrayPoolNetBuffer>.OutputHandler dequeuedHandler = (Connection.Queue<ArrayPoolNetBuffer>.OutputHandler)st[2];
+            Action<ArrayPoolNetBuffer> directHandler = (Action<ArrayPoolNetBuffer>)st[3];
+
+            //blocking
+            log.Info($"Listening for inbound traffic");
+            listener.Listen(ListenThreadName, true, ListenerCanceller, dequeuedHandler, directHandler);
         }
     }
 }
