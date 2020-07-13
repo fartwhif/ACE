@@ -5,30 +5,30 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 
-namespace ACE.Server.Network.Connection
+namespace ACE.Common.Connection
 {
     public class ConnectionProvider<T> : INeedCleanup where T : INeedCleanup
     {
         public ManualResetEvent DoneSignal { get; private set; } = default;
-        public Queue<T> Arrived { get; set; } = null;
+        public NetQueue<T> Arrived { get; set; } = null;
         public Action<T> _ArrivedCallback = null;
 
-        internal Socket sock = default;
-        internal IPEndPoint localListenIPEndPoint = default;
-        internal EndPoint LocalSocket = default;
-        internal long ZeroDoneSignal = -1;
+        public Socket sock = default;
+        protected IPEndPoint localListenIPEndPoint = default;
+        protected EndPoint LocalSocket = default;
+        protected long ZeroDoneSignal = -1;
         internal CancellationTokenSource _CancelSignal = default;
 
         private bool _WithQueue = false;
 
-        public virtual void Listen(string ListenThreadName, bool WithQueue, CancellationTokenSource CancelSignal, Queue<T>.OutputHandler handler, Action<T> ArrivedCallback = null)
+        public virtual void Listen(string ListenThreadName, bool WithQueue, CancellationTokenSource CancelSignal, NetQueue<T>.OutputHandler handler, Action<T> ArrivedCallback = null)
         {
             _WithQueue = WithQueue;
             _ArrivedCallback = ArrivedCallback;
             _CancelSignal = CancelSignal;
             if (WithQueue)
             {
-                Arrived = new Queue<T>(ListenThreadName + " InQueue", handler);
+                Arrived = new NetQueue<T>(ListenThreadName + " InQueue", handler);
             }
         }
         public void ListenCancel()
@@ -64,26 +64,29 @@ namespace ACE.Server.Network.Connection
             {
                 ListenCancel();
             }
-            DoneSignal?.Close();
-            DoneSignal?.Dispose();
+            DoneSignal.Close();
+            DoneSignal.Dispose();
             DoneSignal = null;
-            Arrived?.Shutdown();
-            Arrived?.ReleaseResources();
+            Arrived.Shutdown();
+            Arrived.ReleaseResources();
             Arrived = null;
 
-            try
-            {
-                sock?.Close();
-            }
-            finally
+            if (sock != null)
             {
                 try
                 {
-                    sock?.Dispose();
+                    sock.Close();
                 }
                 finally
                 {
-                    sock = null;
+                    try
+                    {
+                        sock.Dispose();
+                    }
+                    finally
+                    {
+                        sock = null;
+                    }
                 }
             }
         }

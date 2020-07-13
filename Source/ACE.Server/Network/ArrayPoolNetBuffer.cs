@@ -1,10 +1,10 @@
-using ACE.Common;
+using ACE.Server.Network;
 
 using System;
 using System.Buffers;
 using System.Runtime.InteropServices;
 
-namespace ACE.Server.Network.Connection
+namespace ACE.Common.Connection
 {
     public class ArrayPoolNetBuffer : SimpleNetBuffer, INeedCleanup
     {

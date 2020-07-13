@@ -7,9 +7,9 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace ACE.Server.Network.Connection
+namespace ACE.Common.Connection
 {
-    public class Queue<T> : INeedCleanup where T : INeedCleanup
+    public class NetQueue<T> : INeedCleanup where T : INeedCleanup
     {
         private BlockingCollection<T> Buffer = new BlockingCollection<T>();
         private Task _readerTask;
@@ -17,7 +17,7 @@ namespace ACE.Server.Network.Connection
         public int QueueLength => Buffer.Count;
         public delegate void OutputHandler(T rp);
 
-        public Queue(string threadName, OutputHandler handler)
+        public NetQueue(string threadName, OutputHandler handler)
         {
             ProcessorThread = new Thread(new ParameterizedThreadStart(Consumer))
             {

@@ -1,5 +1,5 @@
 using ACE.Common;
-using ACE.Server.Network.Connection;
+using ACE.Common.Connection;
 
 using log4net;
 
@@ -81,7 +81,7 @@ namespace ACE.Server.Network.Managers
             listener.DoneSignal.WaitOne();
             log.Info($"Stopped listening");
         }
-        public void Listen(string ListenThreadName, bool queue, Connection.Queue<ArrayPoolNetBuffer>.OutputHandler dequeuedHandler, Action<ArrayPoolNetBuffer> directHandler = null)
+        public void Listen(string ListenThreadName, bool queue, NetQueue<ArrayPoolNetBuffer>.OutputHandler dequeuedHandler, Action<ArrayPoolNetBuffer> directHandler = null)
         {
             if (listener == null)
             {
@@ -103,7 +103,7 @@ namespace ACE.Server.Network.Managers
 
             string ListenThreadName = (string)st[0];
             bool queue = (bool)st[1];
-            Connection.Queue<ArrayPoolNetBuffer>.OutputHandler dequeuedHandler = (Connection.Queue<ArrayPoolNetBuffer>.OutputHandler)st[2];
+            NetQueue<ArrayPoolNetBuffer>.OutputHandler dequeuedHandler = (NetQueue<ArrayPoolNetBuffer>.OutputHandler)st[2];
             Action<ArrayPoolNetBuffer> directHandler = (Action<ArrayPoolNetBuffer>)st[3];
 
             //blocking

@@ -1,10 +1,10 @@
 using ACE.Common;
+using ACE.Common.Connection;
 using ACE.Database;
 using ACE.Database.Models.Auth;
 using ACE.Entity.Enum;
 using ACE.Server.Entity;
 using ACE.Server.Managers;
-using ACE.Server.Network.Connection;
 using ACE.Server.Network.Enum;
 using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.Network.Handlers;
@@ -38,7 +38,7 @@ namespace ACE.Server.Network.Managers
         private static Random ClientIdWheel { get; set; } = new Random();
         private static ConcurrentDictionary<ulong, Session> Sessions { get; set; } = new ConcurrentDictionary<ulong, Session>();
         private static SocketManager SocketManager;
-        private static Connection.Queue<ArrayPoolNetBuffer> OutboundQueue;
+        private static NetQueue<ArrayPoolNetBuffer> OutboundQueue;
 
         public static void Initialize()
         {
@@ -54,7 +54,7 @@ namespace ACE.Server.Network.Managers
             SocketManager = new SocketManager();
             SocketManager.Initialize();
             SocketManager.Listen("Inbound Net Listener", true, InboundQueue_OnNextPacket);
-            OutboundQueue = new Connection.Queue<ArrayPoolNetBuffer>("Outbound Net Queue", OutboundQueue_Next);
+            OutboundQueue = new NetQueue<ArrayPoolNetBuffer>("Outbound Net Queue", OutboundQueue_Next);
         }
 
         public static int GetSessionCount()

@@ -3,12 +3,12 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 
-namespace ACE.Server.Network.Connection
+namespace ACE.Common.Connection
 {
     public class ArrayPoolConnectionProvider : ConnectionProvider<ArrayPoolNetBuffer>
     {
         public ArrayPoolConnectionProvider(IPEndPoint listenPoint) : base(listenPoint) { }
-        public override void Listen(string ListenThreadName, bool WithQueue, CancellationTokenSource CancelSignal, Queue<ArrayPoolNetBuffer>.OutputHandler dequeuedHandler, Action<ArrayPoolNetBuffer> directHandler = null)
+        public override void Listen(string ListenThreadName, bool WithQueue, CancellationTokenSource CancelSignal, NetQueue<ArrayPoolNetBuffer>.OutputHandler dequeuedHandler, Action<ArrayPoolNetBuffer> directHandler = null)
         {
             base.Listen(ListenThreadName, WithQueue, CancelSignal, dequeuedHandler, directHandler);
             Interlocked.Increment(ref ZeroDoneSignal);

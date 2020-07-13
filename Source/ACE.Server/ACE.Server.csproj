@@ -95,8 +95,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="Network\Connection\TAPConnectionProvider.cs" />
-    <Compile Remove="Network\Connection\TAPNetBuffer.cs" />
     <Compile Remove="Network\PacketQueue.cs" />
     <Compile Remove="Network\RawPacket.cs" />
   </ItemGroup>

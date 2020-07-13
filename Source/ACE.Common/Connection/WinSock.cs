@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Text;
 
-namespace ACE.Server.Network.Connection
+namespace ACE.Common.Connection
 {
     internal static class WinSock
     {
@@ -41,16 +41,6 @@ namespace ACE.Server.Network.Connection
             IOC_PROTOCOL = 0x10000000,
             IOC_VENDOR = 0x18000000,
             SIO_UDP_CONNRESET = IOC_Direction.IOC_IN | IOC_VENDOR | 12
-        }
-        /// <summary>
-        /// From winsock2.h
-        /// https://docs.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls
-        /// Winsock Socket input/output controls (IOCTLs)
-        /// </summary>
-        [Flags]
-        internal enum IOC_OPCODES : uint
-        {
-            SIO_UDP_CONNRESET = IOC_Direction.IOC_IN | IOC_Parameter.IOC_VENDOR | 12
         }
 
         /// <summary>
