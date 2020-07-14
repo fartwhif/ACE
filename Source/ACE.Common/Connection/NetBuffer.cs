@@ -1,15 +1,8 @@
-using ACE.Common;
-
-using System;
-using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 
 namespace ACE.Common.Connection
 {
-
-
     public abstract class NetBuffer : INeedCleanup
     {
         protected NetBuffer(bool AllocateDefaultBuffer)

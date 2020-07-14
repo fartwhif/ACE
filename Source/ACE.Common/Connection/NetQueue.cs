@@ -1,9 +1,6 @@
-using ACE.Common;
 
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -36,9 +33,8 @@ namespace ACE.Common.Connection
                     q?.ReleaseResources();
                 }
             }
-            //Next = null;
-            Buffer?.Dispose();
-            _readerTask?.Dispose();
+            Buffer.Dispose();
+            _readerTask.Dispose();
             Buffer = null;
             _readerTask = null;
         }
@@ -60,7 +56,8 @@ namespace ACE.Common.Connection
                 foreach (T rp in Buffer.GetConsumingEnumerable())
                 {
                     handler(rp);
-                    //rp.ReleaseResources();
+                    // this could be a handy place to perform INeedCleanup end of object life cycle
+                    // rp.ReleaseResources();
                 }
             }, TaskCreationOptions.LongRunning);
         }

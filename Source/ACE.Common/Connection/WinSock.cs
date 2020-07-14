@@ -1,19 +1,10 @@
 using System;
-using System.Collections.Generic;
 using System.Net.Sockets;
-using System.Text;
 
 namespace ACE.Common.Connection
 {
     internal static class WinSock
     {
-        /// <summary>
-        /// From winsock2.h
-        /// https://docs.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls
-        /// Winsock Socket input/output controls (IOCTLs)
-        /// </summary>
-        private const int SIO_UDP_CONNRESET_INT = unchecked((int)IOC_Parameter.SIO_UDP_CONNRESET);//-1744830452;
-
         /// <summary>
         /// From winsock2.h
         /// https://docs.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls
@@ -42,6 +33,13 @@ namespace ACE.Common.Connection
             IOC_VENDOR = 0x18000000,
             SIO_UDP_CONNRESET = IOC_Direction.IOC_IN | IOC_VENDOR | 12
         }
+
+        /// <summary>
+        /// From winsock2.h
+        /// https://docs.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls
+        /// Winsock Socket input/output controls (IOCTLs)
+        /// </summary>
+        private const int SIO_UDP_CONNRESET_INT = unchecked((int)IOC_Parameter.SIO_UDP_CONNRESET);//-1744830452;
 
         /// <summary>
         /// https://docs.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls#sio_udp_connreset-opcode-setting-i-t3
