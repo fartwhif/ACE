@@ -93,7 +93,8 @@ namespace ACE.Server.WorldObjects
             }
 
             EnqueueBroadcast(new GameMessageSystemChat($"{Name} is recalling home.", ChatMessageType.Recall), LocalBroadcastRange, ChatMessageType.Recall);
-            EnqueueBroadcastMotion(motionHouseRecall);
+
+            SendMotionAsCommands(MotionCommand.HouseRecall);
 
             var startPos = new Position(Location);
 
@@ -160,7 +161,8 @@ namespace ACE.Server.WorldObjects
             }
 
             EnqueueBroadcast(new GameMessageSystemChat($"{Name} is recalling to the lifestone.", ChatMessageType.Recall), LocalBroadcastRange, ChatMessageType.Recall);
-            EnqueueBroadcastMotion(motionLifestoneRecall);
+
+            SendMotionAsCommands(MotionCommand.LifestoneRecall);
 
             var startPos = new Position(Location);
 
@@ -217,7 +219,8 @@ namespace ACE.Server.WorldObjects
             }
 
             EnqueueBroadcast(new GameMessageSystemChat($"{Name} is recalling to the marketplace.", ChatMessageType.Recall), LocalBroadcastRange, ChatMessageType.Recall);
-            EnqueueBroadcastMotion(motionMarketplaceRecall);
+
+            SendMotionAsCommands(MotionCommand.MarketplaceRecall);
 
             var startPos = new Position(Location);
 
@@ -292,7 +295,8 @@ namespace ACE.Server.WorldObjects
             }
 
             EnqueueBroadcast(new GameMessageSystemChat($"{Name} is going to the Allegiance hometown.", ChatMessageType.Recall), LocalBroadcastRange, ChatMessageType.Recall);
-            EnqueueBroadcastMotion(motionAllegianceHometownRecall);
+
+            SendMotionAsCommands(MotionCommand.AllegianceHometownRecall);
 
             var startPos = new Position(Location);
 
@@ -382,7 +386,8 @@ namespace ACE.Server.WorldObjects
             }
 
             EnqueueBroadcast(new GameMessageSystemChat($"{Name} is recalling to the Allegiance housing.", ChatMessageType.Recall), LocalBroadcastRange, ChatMessageType.Recall);
-            EnqueueBroadcastMotion(motionHouseRecall);
+
+            SendMotionAsCommands(MotionCommand.HouseRecall);
 
             var startPos = new Position(Location);
 
@@ -458,7 +463,8 @@ namespace ACE.Server.WorldObjects
             }
 
             EnqueueBroadcast(new GameMessageSystemChat($"{Name} is going to the PK Arena.", ChatMessageType.Recall), LocalBroadcastRange, ChatMessageType.Recall);
-            EnqueueBroadcastMotion(motionPkArenaRecall);
+
+            SendMotionAsCommands(MotionCommand.PKArenaRecall);
 
             var startPos = new Position(Location);
 
@@ -535,7 +541,8 @@ namespace ACE.Server.WorldObjects
             }
 
             EnqueueBroadcast(new GameMessageSystemChat($"{Name} is going to the PKL Arena.", ChatMessageType.Recall), LocalBroadcastRange, ChatMessageType.Recall);
-            EnqueueBroadcastMotion(motionPkArenaRecall);
+
+            SendMotionAsCommands(MotionCommand.PKArenaRecall);
 
             var startPos = new Position(Location);
 
@@ -564,6 +571,22 @@ namespace ACE.Server.WorldObjects
             });
 
             actionChain.EnqueueChain();
+        }
+
+        public void SendMotionAsCommands(MotionCommand motionCommand)
+        {
+            if (FastTick)
+            {
+                var actionChain = new ActionChain();
+                EnqueueMotionAction(actionChain, new List<MotionCommand>() { motionCommand }, 1.0f, MotionStance.NonCombat);
+                actionChain.EnqueueChain();
+            }
+            else
+            {
+                var motion = new Motion(MotionStance.NonCombat, MotionCommand.Ready);
+                motion.MotionState.AddCommand(this, motionCommand);
+                EnqueueBroadcastMotion(motion);
+            }
         }
 
         public DateTime LastTeleportTime;
@@ -677,12 +700,12 @@ namespace ACE.Server.WorldObjects
 
         public void SendTeleportedViaMagicMessage(WorldObject itemCaster, Spell spell)
         {
-            if (itemCaster == null)
+            if (itemCaster == null || itemCaster is Gem)
                 Session.Network.EnqueueSend(new GameMessageSystemChat($"You have been teleported.", ChatMessageType.Magic));
             else if (this != itemCaster && !(itemCaster is Gem))
                 Session.Network.EnqueueSend(new GameMessageSystemChat($"{itemCaster.Name} teleports you with {spell.Name}.", ChatMessageType.Magic));
-            else if (itemCaster is Gem)
-                Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.ITeleported));
+            //else if (itemCaster is Gem)
+            //    Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.ITeleported));
         }
 
         public void NotifyLandblocks()
@@ -744,6 +767,18 @@ namespace ACE.Server.WorldObjects
             0x9EE5,     // Northwatch Castle Black Market
             0xB5F0,     // Aerfalle's Sanctum
             0xF92F,     // Freebooter Keep Black Market
+            0x00B0,     // Colosseum Arena One
+            0x00B1,     // Colosseum Arena Two
+            0x00B2,     // Colosseum Arena Three
+            0x00B3,     // Colosseum Arena Four
+            0x00B4,     // Colosseum Arena Five
+            0x00B6,     // Colosseum Arena Mini-Bosses
+            0x5960,     // Gauntlet Arena One (Celestial Hand)
+            0x5961,     // Gauntlet Arena Two (Celestial Hand)
+            0x5962,     // Gauntlet Arena One (Eldritch Web)
+            0x5963,     // Gauntlet Arena Two (Eldritch Web)
+            0x5964,     // Gauntlet Arena One (Radiant Blood)
+            0x5965,     // Gauntlet Arena Two (Radiant Blood)
         };
 
         /// <summary>

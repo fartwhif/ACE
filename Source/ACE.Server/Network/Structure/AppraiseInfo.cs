@@ -99,10 +99,10 @@ namespace ACE.Server.Network.Structure
                 if (!PropertiesBool.ContainsKey(PropertyBool.AppraisalHasAllowedActivator))
                     PropertiesBool.Add(PropertyBool.AppraisalHasAllowedActivator, true);
 
-            if (PropertiesString.ContainsKey(PropertyString.ScribeAccount) && !examiner.IsAdmin && !examiner.IsSentinel && !examiner.IsArch && !examiner.IsPsr)
+            if (PropertiesString.ContainsKey(PropertyString.ScribeAccount) && !examiner.IsAdmin && !examiner.IsSentinel && !examiner.IsEnvoy && !examiner.IsArch && !examiner.IsPsr)
                 PropertiesString.Remove(PropertyString.ScribeAccount);
 
-            if (PropertiesString.ContainsKey(PropertyString.HouseOwnerAccount) && !examiner.IsAdmin && !examiner.IsSentinel && !examiner.IsArch && !examiner.IsPsr)
+            if (PropertiesString.ContainsKey(PropertyString.HouseOwnerAccount) && !examiner.IsAdmin && !examiner.IsSentinel && !examiner.IsEnvoy && !examiner.IsArch && !examiner.IsPsr)
                 PropertiesString.Remove(PropertyString.HouseOwnerAccount);
 
             if (PropertiesInt.ContainsKey(PropertyInt.Lifespan))
@@ -292,7 +292,7 @@ namespace ACE.Server.Network.Structure
                 PropertiesString[PropertyString.Use] = useMessage;
             }
 
-            if (wo is CraftTool && wo.ItemType == ItemType.TinkeringMaterial)
+            if (wo is CraftTool && (wo.ItemType == ItemType.TinkeringMaterial || wo.WeenieClassId >= 36619 && wo.WeenieClassId <= 36628 || wo.WeenieClassId >= 36634 && wo.WeenieClassId <= 36636))
             {
                 if (PropertiesInt.ContainsKey(PropertyInt.Structure))
                     PropertiesInt.Remove(PropertyInt.Structure);
@@ -363,6 +363,8 @@ namespace ACE.Server.Network.Structure
 
             if (wo.ItemSkillLimit != null)
                 PropertiesInt[PropertyInt.AppraisalItemSkill] = (int)wo.ItemSkillLimit;
+            else
+                PropertiesInt.Remove(PropertyInt.AppraisalItemSkill);
 
             if (PropertiesFloat.ContainsKey(PropertyFloat.WeaponDefense) && !(wo is Missile) && !(wo is Ammunition))
             {
@@ -405,6 +407,20 @@ namespace ACE.Server.Network.Structure
                     ResistColor = ResistMaskHelper.GetColorMask(wielder, wo);
                 }
             }
+
+            var appraisalLongDescDecoration = AppraisalLongDescDecorations.None;
+
+            if (wo.ItemWorkmanship > 0)
+                appraisalLongDescDecoration |= AppraisalLongDescDecorations.PrependWorkmanship;
+            if (wo.MaterialType > 0)
+                appraisalLongDescDecoration |= AppraisalLongDescDecorations.PrependMaterial;
+            if (wo.GemType > 0 && wo.GemCount > 0)
+                appraisalLongDescDecoration |= AppraisalLongDescDecorations.AppendGemInfo;
+
+            if (appraisalLongDescDecoration > 0)
+                PropertiesInt[PropertyInt.AppraisalLongDescDecoration] = (int)appraisalLongDescDecoration;
+            else
+                PropertiesInt.Remove(PropertyInt.AppraisalLongDescDecoration);
         }
 
         private void BuildSpells(WorldObject wo)
@@ -547,7 +563,8 @@ namespace ACE.Server.Network.Structure
             ResistHighlight = ResistMaskHelper.GetHighlightMask(creature);
             ResistColor = ResistMaskHelper.GetColorMask(creature);
 
-            ArmorLevels = new ArmorLevel(creature);
+            if (creature is Player || !creature.Attackable)
+                ArmorLevels = new ArmorLevel(creature);
 
             AddRatings(creature);
 

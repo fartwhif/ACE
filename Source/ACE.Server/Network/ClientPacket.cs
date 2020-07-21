@@ -82,6 +82,12 @@ namespace ACE.Server.Network
             }
         }
 
+        public void ReleaseBuffer()
+        {
+            Data = null;
+            DataReader = null;
+        }
+
         private uint? _fragmentChecksum;
         private uint fragmentChecksum
         {

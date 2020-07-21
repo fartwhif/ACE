@@ -147,8 +147,13 @@ namespace ACE.Server.WorldObjects
                     IsAdmin = true;
                 if (Session.AccessLevel == AccessLevel.Developer)
                     IsArch = true;
-                if (Session.AccessLevel == AccessLevel.Envoy || Session.AccessLevel == AccessLevel.Sentinel)
+                if (Session.AccessLevel == AccessLevel.Sentinel)
                     IsSentinel = true;
+                if (Session.AccessLevel == AccessLevel.Envoy)
+                {
+                    IsEnvoy = true;
+                    IsSentinel = true; //IsEnvoy is not recognized by the client and therefore the client should treat the user as a Sentinel.
+                }
                 if (Session.AccessLevel == AccessLevel.Advocate)
                     IsAdvocate = true;
             }
@@ -516,6 +521,8 @@ namespace ACE.Server.WorldObjects
                         LeaveTurbineChatChannel("Roleplay");
                     if (GetCharacterOption(CharacterOption.ListenToAllegianceChat) && Allegiance != null)
                         LeaveTurbineChatChannel("Allegiance");
+                    if (GetCharacterOption(CharacterOption.ListenToSocietyChat) && Society != FactionBits.None)
+                        LeaveTurbineChatChannel("Society");
                 }
             }
 
@@ -783,7 +790,11 @@ namespace ACE.Server.WorldObjects
         public void HandleActionTalk(string message)
         {
             if (!IsGagged)
+            {
                 EnqueueBroadcast(new GameMessageCreatureMessage(message, Name, Guid.Full, ChatMessageType.Speech), LocalBroadcastRange, ChatMessageType.Speech);
+
+                OnTalk(message);
+            }
             else
                 SendGagError();
         }
@@ -809,7 +820,11 @@ namespace ACE.Server.WorldObjects
         public void HandleActionEmote(string message)
         {
             if (!IsGagged)
+            {
                 EnqueueBroadcast(new GameMessageEmoteText(Guid.Full, Name, message), LocalBroadcastRange);
+
+                OnTalk(message);
+            }
             else
                 SendGagError();
         }
@@ -817,9 +832,32 @@ namespace ACE.Server.WorldObjects
         public void HandleActionSoulEmote(string message)
         {
             if (!IsGagged)
+            {
                 EnqueueBroadcast(new GameMessageSoulEmote(Guid.Full, Name, message), LocalBroadcastRange);
+
+                OnTalk(message);
+            }
             else
                 SendGagError();
+        }
+
+        public void OnTalk(string message)
+        {
+            if (PhysicsObj == null || CurrentLandblock == null) return;
+
+            var isDungeon = CurrentLandblock.PhysicsLandblock != null && CurrentLandblock.PhysicsLandblock.IsDungeon;
+
+            var rangeSquared = LocalBroadcastRangeSq;
+
+            foreach (var creature in PhysicsObj.ObjMaint.GetKnownObjectsValuesAsCreature())
+            {
+                if (isDungeon && Location.Landblock != creature.Location.Landblock)
+                    continue;
+
+                var distSquared = Location.SquaredDistanceTo(creature.Location);
+                if (distSquared <= rangeSquared)
+                    creature.EmoteManager.OnHearChat(this, message);
+            }
         }
 
         public void HandleActionJump(JumpPack jump)

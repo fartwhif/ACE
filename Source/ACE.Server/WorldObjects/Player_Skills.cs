@@ -168,7 +168,7 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Sets the skill to trained status for a character
         /// </summary>
-        public bool TrainSkill(Skill skill, int creditsSpent)
+        public bool TrainSkill(Skill skill, int creditsSpent, bool applyCreationBonusXP = false)
         {
             var creatureSkill = GetCreatureSkill(skill);
 
@@ -177,8 +177,15 @@ namespace ACE.Server.WorldObjects
 
             creatureSkill.AdvancementClass = SkillAdvancementClass.Trained;
             creatureSkill.Ranks = 0;
-            creatureSkill.ExperienceSpent = 0;
-            creatureSkill.InitLevel += 5;
+            creatureSkill.InitLevel = 0;
+
+            if (applyCreationBonusXP)
+            {
+                creatureSkill.ExperienceSpent = 526;
+                creatureSkill.Ranks = 5;
+            }
+            else
+                creatureSkill.ExperienceSpent = 0;
 
             AvailableSkillCredits -= creditsSpent;
 
@@ -222,7 +229,7 @@ namespace ACE.Server.WorldObjects
                 creatureSkill.Ranks = (ushort)CalcSkillRank(SkillAdvancementClass.Specialized, creatureSkill.ExperienceSpent);
             }
 
-            creatureSkill.InitLevel += 5;
+            creatureSkill.InitLevel = 10;
             creatureSkill.AdvancementClass = SkillAdvancementClass.Specialized;
 
             AvailableSkillCredits -= creditsSpent;
@@ -258,7 +265,7 @@ namespace ACE.Server.WorldObjects
                 if (IsSkillUntrainable(skill))
                 {
                     creatureSkill.AdvancementClass = SkillAdvancementClass.Untrained;
-                    creatureSkill.InitLevel -= 5;
+                    creatureSkill.InitLevel = 0;
                     AvailableSkillCredits += creditsSpent;
                 }
 
@@ -284,7 +291,7 @@ namespace ACE.Server.WorldObjects
             AvailableSkillCredits += creditsSpent;
 
             creatureSkill.AdvancementClass = SkillAdvancementClass.Trained;
-            creatureSkill.InitLevel -= 5;
+            creatureSkill.InitLevel = 0;
             creatureSkill.ExperienceSpent = 0;
             creatureSkill.Ranks = 0;
 
@@ -578,11 +585,24 @@ namespace ACE.Server.WorldObjects
             Skill.Salvaging
         };
 
+        public static List<Skill> AugSpecSkills = new List<Skill>()
+        {
+            Skill.ArmorTinkering,
+            Skill.ItemTinkering,
+            Skill.MagicItemTinkering,
+            Skill.WeaponTinkering,
+            Skill.Salvaging
+        };
+
         public static bool IsSkillUntrainable(Skill skill)
         {
             return !AlwaysTrained.Contains(skill);
         }
 
+        public static bool IsSkillSpecializedViaAugmentation(Skill skill)
+        {
+            return !AugSpecSkills.Contains(skill);
+        }
 
         public override bool GetHeritageBonus(WorldObject weapon)
         {
@@ -708,12 +728,85 @@ namespace ACE.Server.WorldObjects
             actionChain.EnqueueChain();
         }
 
+        public void HandleSkillSpecCreditRefund()
+        {
+            if (!(GetProperty(PropertyBool.UnspecializedSkills) ?? false)) return;
+
+            var actionChain = new ActionChain();
+            actionChain.AddDelaySeconds(5.0f);
+            actionChain.AddAction(this, () =>
+            {
+                Session.Network.EnqueueSend(new GameMessageSystemChat("Your specialized skills have been unspecialized due to an error with skill credits.\nYou have received a refund for these skill credits and experience.", ChatMessageType.Broadcast));
+
+                RemoveProperty(PropertyBool.UnspecializedSkills);
+            });
+            actionChain.EnqueueChain();
+        }
+
+        public void HandleFreeSkillResetRenewal()
+        {
+            if (!(GetProperty(PropertyBool.FreeSkillResetRenewed) ?? false)) return;
+
+            var actionChain = new ActionChain();
+            actionChain.AddDelaySeconds(5.0f);
+            actionChain.AddAction(this, () =>
+            {
+                Session.Network.EnqueueSend(new GameMessageSystemChat("Your opportunity to change your skills is renewed! Visit Fianhe to reset your skills.", ChatMessageType.Magic));
+
+                RemoveProperty(PropertyBool.FreeSkillResetRenewed);
+
+                QuestManager.Erase("UsedFreeSkillReset");
+            });
+            actionChain.EnqueueChain();
+        }
+
+        public void HandleFreeAttributeResetRenewal()
+        {
+            if (!(GetProperty(PropertyBool.FreeAttributeResetRenewed) ?? false)) return;
+
+            var actionChain = new ActionChain();
+            actionChain.AddDelaySeconds(5.0f);
+            actionChain.AddAction(this, () =>
+            {
+                // Your opportunity to change your attributes is renewed! Visit Chafulumisa to reset your skills [sic attributes].
+                Session.Network.EnqueueSend(new GameMessageSystemChat("Your opportunity to change your attributes is renewed! Visit Chafulumisa to reset your attributes.", ChatMessageType.Magic));
+
+                RemoveProperty(PropertyBool.FreeAttributeResetRenewed);
+
+                QuestManager.Erase("UsedFreeAttributeReset");
+            });
+            actionChain.EnqueueChain();
+        }
+
+        public void HandleSkillTemplesReset()
+        {
+            if (!(GetProperty(PropertyBool.SkillTemplesTimerReset) ?? false)) return;
+
+            var actionChain = new ActionChain();
+            actionChain.AddDelaySeconds(5.0f);
+            actionChain.AddAction(this, () =>
+            {
+                Session.Network.EnqueueSend(new GameMessageSystemChat("The Temples of Forgetfulness and Enlightenment have had the timer for their use reset due to skill changes.", ChatMessageType.Magic));
+
+                RemoveProperty(PropertyBool.SkillTemplesTimerReset);
+
+                QuestManager.Erase("ForgetfulnessGems1");
+                QuestManager.Erase("ForgetfulnessGems2");
+                QuestManager.Erase("ForgetfulnessGems3");
+                QuestManager.Erase("ForgetfulnessGems4");
+                QuestManager.Erase("Forgetfulness6days");
+                QuestManager.Erase("Forgetfulness13days");
+                QuestManager.Erase("Forgetfulness20days");
+            });
+            actionChain.EnqueueChain();
+        }
+
         /// <summary>
         /// Resets the skill, refunds all experience and skill credits, if allowed.
         /// </summary>
         public bool ResetSkill(Skill skill)
         {
-            var creatureSkill = GetCreatureSkill(skill);
+            var creatureSkill = GetCreatureSkill(skill, false);
 
             if (creatureSkill == null || creatureSkill.AdvancementClass < SkillAdvancementClass.Trained)
                 return false;
@@ -751,26 +844,26 @@ namespace ACE.Server.WorldObjects
                     break;
             }
 
-            if (specAug)
-                return false;   // send message?
+            //if (specAug)
+            //    return false;   // send message?
 
             var typeOfSkill = creatureSkill.AdvancementClass.ToString().ToLower() + " ";
             var untrainable = IsSkillUntrainable(skill);
             var creditRefund = creatureSkill.AdvancementClass == SkillAdvancementClass.Specialized || untrainable;
 
-            if (creatureSkill.AdvancementClass == SkillAdvancementClass.Specialized)
+            if (creatureSkill.AdvancementClass == SkillAdvancementClass.Specialized && !specAug)
             {
                 creatureSkill.AdvancementClass = SkillAdvancementClass.Trained;
-                creatureSkill.InitLevel -= 5;
+                creatureSkill.InitLevel = 0;
                 AvailableSkillCredits += skillBase.UpgradeCostFromTrainedToSpecialized;
             }
 
             // temple untraining 'always trained' skills:
             // cannot be untrained, but skill XP can be recovered
-            if (untrainable)
+            if (untrainable && !specAug)
             {
                 creatureSkill.AdvancementClass = SkillAdvancementClass.Untrained;
-                creatureSkill.InitLevel -= 5;
+                creatureSkill.InitLevel = 0;
                 AvailableSkillCredits += skillBase.TrainedCost;
             }
 
@@ -782,8 +875,8 @@ namespace ACE.Server.WorldObjects
             var updateSkill = new GameMessagePrivateUpdateSkill(this, creatureSkill);
             var availableSkillCredits = new GameMessagePrivateUpdatePropertyInt(this, PropertyInt.AvailableSkillCredits, AvailableSkillCredits ?? 0);
 
-            var msg = $"Your {typeOfSkill} {skill.ToSentence()} skill has been {(untrainable ? "removed" : "reset")}. ";
-            msg += $"All the experience {(creditRefund ? "and skill credits " : "")}that you spent on this skill have been refunded to you.";
+            var msg = $"Your {(untrainable && !specAug ? $"{typeOfSkill}" : "")}{skill.ToSentence()} skill has been {(untrainable && !specAug ? "removed" : "reset")}. ";
+            msg += $"All the experience {(creditRefund && !specAug ? "and skill credits " : "")}that you spent on this skill have been refunded to you.";
 
             Session.Network.EnqueueSend(updateSkill, availableSkillCredits, new GameMessageSystemChat(msg, ChatMessageType.Broadcast));
 
