@@ -838,8 +838,9 @@ namespace ACE.Server.Network
         {
             isReleased = true;
 
-            session.ReleaseResources();
-            session = null;
+            //session.ReleaseResources();
+            //session = null;
+
             EndPoint = null;
             ConnectionData.ReleaseResources();
             ConnectionData = null;
