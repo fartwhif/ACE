@@ -107,8 +107,9 @@ namespace ACE.Server.Network.Managers
             Action<ArrayPoolNetBuffer> directHandler = (Action<ArrayPoolNetBuffer>)st[3];
 
             //blocking
-            log.Info($"Listening for inbound traffic");
+            log.Info($"Listening for inbound traffic from {strEndp}");
             listener.Listen(ListenThreadName, true, ListenerCanceller, dequeuedHandler, directHandler);
+            log.Info($"Stopped listening for inbound traffic from {strEndp}");
         }
     }
 }

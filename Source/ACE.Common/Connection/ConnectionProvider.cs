@@ -77,16 +77,10 @@ namespace ACE.Common.Connection
                 {
                     sock.Close();
                 }
+                catch { }
                 finally
                 {
-                    try
-                    {
-                        sock.Dispose();
-                    }
-                    finally
-                    {
-                        sock = null;
-                    }
+                    sock = null;
                 }
             }
         }

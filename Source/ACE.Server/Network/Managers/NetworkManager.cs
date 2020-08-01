@@ -222,7 +222,7 @@ namespace ACE.Server.Network.Managers
                                     packetLog.Warn("debouncing login packet");
                                     return;
                                 }
-                                session.Terminate(SessionTerminationReason.AccountLoggedIn, new GameMessageBootAccount(SessionTerminationReasonHelper.GetDescription(SessionTerminationReason.AccountLoggedIn)));
+                                session.Terminate(SessionTerminationReason.AccountLoggedIn, new GameMessageBootAccount(SessionTerminationReasonHelper.GetDescription(SessionTerminationReason.AccountLoggedIn) + "\nfrom " + remote.ToString()));
                             }
                         }
                         else if (session.State == SessionState.AuthLoginRequest)

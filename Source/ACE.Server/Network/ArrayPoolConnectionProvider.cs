@@ -8,8 +8,10 @@ namespace ACE.Common.Connection
     public class ArrayPoolConnectionProvider : ConnectionProvider<ArrayPoolNetBuffer>
     {
         public ArrayPoolConnectionProvider(IPEndPoint listenPoint) : base(listenPoint) { }
+        private bool WithQueue = false;
         public override void Listen(string ListenThreadName, bool WithQueue, CancellationTokenSource CancelSignal, NetQueue<ArrayPoolNetBuffer>.OutputHandler dequeuedHandler, Action<ArrayPoolNetBuffer> directHandler = null)
         {
+            this.WithQueue = WithQueue;
             base.Listen(ListenThreadName, WithQueue, CancelSignal, dequeuedHandler, directHandler);
             Interlocked.Increment(ref ZeroDoneSignal);
             try
@@ -36,15 +38,7 @@ namespace ACE.Common.Connection
                     // wait for inbound data
                     state.DoneSignal.WaitOne();
 
-                    // notify
-                    if (WithQueue)
-                    {
-                        Arrived.AddItem(state);
-                    }
-                    if (_ArrivedCallback != null)
-                    {
-                        _ArrivedCallback.Invoke(state);
-                    }
+
                 }
             }
             catch (Exception e)
@@ -125,8 +119,19 @@ namespace ACE.Common.Connection
                 byte[] buffer = state.Buffer;
                 EndPoint peer = state.Peer;
                 state.DataSize = sock.EndReceiveFrom(ar, ref peer);
+                state.DoneSignal.Set();
                 state.Peer = peer;
                 state.Success = state.DataSize > 0 && state.Buffer != null && state.DataSize < state.Buffer.Length;
+                // notify
+                if (WithQueue)
+                {
+                    Arrived.AddItem(state);
+                }
+                if (_ArrivedCallback != null)
+                {
+                    _ArrivedCallback.Invoke(state);
+                }
+                
             }
             finally
             {

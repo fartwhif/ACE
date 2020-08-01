@@ -655,9 +655,13 @@ namespace ACE.Server.Network
 
         private void FlushPackets()
         {
-            while (packetQueue.TryDequeue(out ServerPacket packet))
+            if (packetQueue.Count() > 0)
             {
                 packetLog.DebugFormat("[{0}] Flushing packets, count {1}", session.LoggingIdentifier, packetQueue.Count);
+            }
+            while (packetQueue.TryDequeue(out ServerPacket packet))
+            {
+                
 
                 if (packet.Header.HasFlag(PacketHeaderFlags.EncryptedChecksum) && ConnectionData.PacketSequence.CurrentValue == 0)
                 {
