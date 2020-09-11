@@ -105,6 +105,7 @@ namespace ACE.Server.WorldObjects
 
         public override CombatType GetCombatType()
         {
+            // this is an unsafe function, move away from this
             var weapon = GetEquippedWeapon();
 
             if (weapon == null || weapon.CurrentWieldedLocation != EquipMask.MissileWeapon)
@@ -306,7 +307,7 @@ namespace ACE.Server.WorldObjects
 
                     //Console.WriteLine($"NoStaminaUseChance: {noStaminaUseChance}");
 
-                    if (noStaminaUseChance < ThreadSafeRandom.Next(0.0f, 1.0f))
+                    if (noStaminaUseChance <= ThreadSafeRandom.Next(0.0f, 1.0f))
                         UpdateVitalDelta(Stamina, -1);
                 }
                 else
@@ -708,6 +709,9 @@ namespace ACE.Server.WorldObjects
                 actionChain.AddAction(this, () => HandleActionChangeCombatMode_Inner(newCombatMode));
                 actionChain.EnqueueChain();
             }
+
+            if (IsAfk)
+                HandleActionSetAFKMode(false);
         }
 
         public void HandleActionChangeCombatMode_Inner(CombatMode newCombatMode)
@@ -837,8 +841,13 @@ namespace ACE.Server.WorldObjects
         // - These abilities are player-only, creatures with high endurance will not benefit from any of these changes.
         // - Come May, you can type @help endurance for a summary of the April changes to Endurance.
 
-        public override float GetNaturalResistance()
+        public override float GetNaturalResistance(DamageType damageType)
         {
+            // http://acpedia.org/wiki/Announcements_-_11th_Anniversary_Preview#Void_Magic_and_You.21
+            // Creatures under Asheron’s protection take half damage from any nether type spell.
+            if (damageType == DamageType.Nether)
+                return (float)PropertyManager.GetDouble("void_pvp_modifier").Item;
+
             // base strength and endurance give the player a natural resistance to damage,
             // which caps at 50% (equivalent to level 5 life prots)
             // these do not stack with life protection spells
@@ -1040,7 +1049,9 @@ namespace ACE.Server.WorldObjects
                     return DamageType.Slash;
             }
 
-            return damageType.SelectDamageType();
+            var powerLevel = combatType == CombatType.Melee ? (float?)PowerLevel : null;
+
+            return damageType.SelectDamageType(powerLevel);
         }
 
         public WorldObject HandArmor => EquippedObjects.Values.FirstOrDefault(i => (i.ClothingPriority & CoverageMask.Hands) > 0);

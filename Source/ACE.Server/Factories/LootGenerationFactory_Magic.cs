@@ -2,6 +2,7 @@ using ACE.Common;
 using ACE.Database.Models.World;
 using ACE.Database;
 using ACE.Entity.Enum;
+using ACE.Server.Factories.Tables;
 using ACE.Server.WorldObjects;
 
 namespace ACE.Server.Factories
@@ -79,7 +80,7 @@ namespace ACE.Server.Factories
             var baseRating = ThreadSafeRandom.Next(1, 10);
             var rng = ThreadSafeRandom.Next(0.0f, 1.0f);
             var tierMod = 0.4f + tier * 0.02f;
-            if (rng > tierMod)
+            if (rng > tierMod)      // TODO: this might be backwards, review
                 baseRating += ThreadSafeRandom.Next(1, 10);
 
             return baseRating;
@@ -116,12 +117,12 @@ namespace ACE.Server.Factories
             int maxSpellLevel = LootTables.ScrollLootMatrix[scrollLootMatrixIndex][1];
 
             int scrollLootIndex = ThreadSafeRandom.Next(minSpellLevel, maxSpellLevel);
-            uint spellID = 0;
+            var spellID = SpellId.Undef;
 
-            while (spellID == 0)
-                spellID = (uint)LootTables.ScrollSpells[ThreadSafeRandom.Next(0, LootTables.ScrollSpells.Length - 1)][scrollLootIndex];
+            while (spellID == SpellId.Undef)
+                spellID = ScrollSpells.Table[ThreadSafeRandom.Next(0, ScrollSpells.Table.Length - 1)][scrollLootIndex];
 
-            var weenie = DatabaseManager.World.GetScrollWeenie(spellID);
+            var weenie = DatabaseManager.World.GetScrollWeenie((uint)spellID);
             if (weenie == null)
             {
                 log.DebugFormat("CreateRandomScroll for tier {0} and spellID of {1} returned null from the database.", tier, spellID);
@@ -224,8 +225,14 @@ namespace ACE.Server.Factories
             int materialType = GetMaterialType(wo, profile.Tier);
             if (materialType > 0)
                 wo.MaterialType = (MaterialType)materialType;
-            wo.GemCount = ThreadSafeRandom.Next(1, 5);
+
+            if (wo.GemCode != null)
+                wo.GemCount = GemCountChance.Roll(wo.GemCode.Value, profile.Tier);
+            else
+                wo.GemCount = ThreadSafeRandom.Next(1, 5);
+
             wo.GemType = (MaterialType)ThreadSafeRandom.Next(10, 50);
+
             wo.Value = GetValue(profile.Tier, wo.ItemWorkmanship.Value, LootTables.getMaterialValueModifier(wo), LootTables.getGemMaterialValueModifier(wo));
             // Is this right??
             wo.LongDesc = wo.Name;
@@ -272,19 +279,23 @@ namespace ACE.Server.Factories
             RandomizeColor(wo);
         }
 
-        private static bool GetMutateCasterData(uint wcid, out int wield, out int element)
+        private static bool GetMutateCasterData(uint wcid, out int element)
         {
-            for (wield = 0; wield < LootTables.CasterWeaponsMatrix.Length; wield++)
+            for (var i = 0; i < LootTables.CasterWeaponsMatrix.Length; i++)
             {
-                var table = LootTables.CasterWeaponsMatrix[wield];
+                var table = LootTables.CasterWeaponsMatrix[i];
 
                 for (element = 0; element < table.Length; element++)
                 {
                     if (wcid == table[element])
+                    {
+                        if (i == 0)
+                            element = -1;
+
                         return true;
+                    }
                 }
             }
-            wield = -1;
             element = -1;
             return false;
         }
