@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 
 using ACE.Common;
@@ -5,6 +6,7 @@ using ACE.Database.Models.World;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
 using ACE.Server.Entity;
+using ACE.Server.Factories.Enum;
 using ACE.Server.Factories.Tables;
 using ACE.Server.Managers;
 using ACE.Server.WorldObjects;
@@ -16,7 +18,7 @@ namespace ACE.Server.Factories
         private static WorldObject CreateArmor(TreasureDeath profile, bool isMagical, bool isArmor, LootBias lootBias = LootBias.UnBiased, bool mutate = true)
         {
             var minType = LootTables.ArmorType.Helms;
-            var maxType = new LootTables.ArmorType();
+            LootTables.ArmorType maxType;
 
             switch (profile.Tier)
             {
@@ -45,7 +47,7 @@ namespace ACE.Server.Factories
 
             // Added for making clothing drops their own drop, and not involved in armor roll chance
             LootTables.ArmorType armorType;
-            if (isArmor == true)
+            if (isArmor)
                 armorType = (LootTables.ArmorType)ThreadSafeRandom.Next((int)minType, (int)maxType);
             else
                 armorType = LootTables.ArmorType.MiscClothing;
@@ -139,11 +141,6 @@ namespace ACE.Server.Factories
 
         private static void MutateArmor(WorldObject wo, TreasureDeath profile, bool isMagical, LootTables.ArmorType armorType)
         {
-            wo.LongDesc = wo.Name;
-
-            //wo.AppraisalItemSkill = 7;
-            //wo.AppraisalLongDescDecoration = AppraisalLongDescDecorations.PrependWorkmanship;
-
             int materialType = GetMaterialType(wo, profile.Tier);
             if (materialType > 0)
                 wo.MaterialType = (MaterialType)materialType;
@@ -153,7 +150,7 @@ namespace ACE.Server.Factories
             else
                 wo.GemCount = ThreadSafeRandom.Next(1, 6);
 
-            wo.GemType = (MaterialType)ThreadSafeRandom.Next(10, 50);
+            wo.GemType = RollGemType(profile.Tier);
 
             int workmanship = GetWorkmanship(profile.Tier);
             wo.ItemWorkmanship = workmanship;
@@ -208,7 +205,7 @@ namespace ACE.Server.Factories
             if (isMagical)
             {
                 //bool covenantArmor = false || (armorType == LootTables.ArmorType.CovenantArmor || armorType == LootTables.ArmorType.OlthoiArmor);
-                wo = AssignMagic(wo, profile, true);
+                AssignMagic(wo, profile, true);
             }
             else
             {
@@ -219,18 +216,21 @@ namespace ACE.Server.Factories
                 wo.ItemDifficulty = null;
             }
 
+            wo.LongDesc = GetLongDesc(wo);
+
+            //wo.AppraisalItemSkill = 7;
+            //wo.AppraisalLongDescDecoration = AppraisalLongDescDecorations.PrependWorkmanship;
+
             // try mutate burden, if MutateFilter exists
             if (wo.HasMutateFilter(MutateFilter.EncumbranceVal))
-                MutateBurden(wo, profile.Tier, false);
+                MutateBurden(wo, profile, false);
 
-            RandomizeColor(wo);
+            MutateColor(wo);
         }
 
 
         private static void MutateSocietyArmor(WorldObject wo, TreasureDeath profile, bool isMagical)
         {
-            wo.LongDesc = wo.Name;
-
             int materialType = GetMaterialType(wo, profile.Tier);
             if (materialType > 0)
                 wo.MaterialType = (MaterialType)materialType;
@@ -240,7 +240,7 @@ namespace ACE.Server.Factories
             else
                 wo.GemCount = ThreadSafeRandom.Next(1, 6);
 
-            wo.GemType = (MaterialType)ThreadSafeRandom.Next(10, 50);
+            wo.GemType = RollGemType(profile.Tier);
 
             int workmanship = GetWorkmanship(profile.Tier);
             wo.ItemWorkmanship = workmanship;
@@ -255,7 +255,7 @@ namespace ACE.Server.Factories
             if (isMagical)
             {
                 // looks like society armor always had impen on it
-                wo = AssignMagic(wo, profile, true);
+                AssignMagic(wo, profile, true);
             }
             else
             {
@@ -267,10 +267,11 @@ namespace ACE.Server.Factories
             }
             wo = AssignArmorLevel(wo, profile.Tier, LootTables.ArmorType.SocietyArmor);
 
+            wo.LongDesc = GetLongDesc(wo);
+
             // try mutate burden, if MutateFilter exists
             if (wo.HasMutateFilter(MutateFilter.EncumbranceVal))
-                MutateBurden(wo, profile.Tier, false);
-
+                MutateBurden(wo, profile, false);
         }
 
         private static bool GetMutateArmorData(uint wcid, out LootTables.ArmorType? armorType)
@@ -794,7 +795,6 @@ namespace ACE.Server.Factories
                     wo.ProcSpellSelfTargeted = false;
                 wo.CloakWeaveProc = 1;
             }
-            
         }
         private static int GetCloakMaxLevel(TreasureDeath profile)
         {
