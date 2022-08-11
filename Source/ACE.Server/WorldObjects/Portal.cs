@@ -12,12 +12,33 @@ using ACE.Server.Entity.Actions;
 using ACE.Server.Managers;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
+using System;
+using System.Collections.Generic;
 
 namespace ACE.Server.WorldObjects
 {
     public partial class Portal : WorldObject
     {
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
+
+        private List<Action<Portal, Player>> warp_CollideObjectHooks = new List<Action<Portal, Player>>();
+
+        public void warp_AddCollideObjectHook(Action<Portal, Player> action)
+        {
+            warp_CollideObjectHooks.Add(action);
+            log.Debug($"[warp] added CollideObject hook for {Name}");
+        }
+
+        private void warp_ExecuteCollideObjectHooks(Player player)
+        {
+            for (int i = 0; i < warp_CollideObjectHooks.Count; i++)
+            {
+                warp_CollideObjectHooks[i](this, player);
+                log.Debug($"[warp] executed CollideObject hook for {Name} and {player.Name}");
+            }
+        }
+
+
 
         /// <summary>
         /// A new biota be created taking all of its values from weenie.
@@ -102,6 +123,7 @@ namespace ACE.Server.WorldObjects
 
         public virtual void OnCollideObject(Player player)
         {
+            warp_ExecuteCollideObjectHooks(player);
             OnActivate(player);
         }
 
