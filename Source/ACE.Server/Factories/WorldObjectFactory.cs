@@ -20,10 +20,37 @@ namespace ACE.Server.Factories
     {
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
+        private static List<KeyValuePair<WeenieType, Action<WorldObject>>> warp_CreateWorldObjectHooks = new List<KeyValuePair<WeenieType, Action<WorldObject>>>();
+
+        public static void warp_AddCreateWorldObjectHook(WeenieType weenie, Action<WorldObject> action)
+        {
+            warp_CreateWorldObjectHooks.Add(new KeyValuePair<WeenieType, Action<WorldObject>>(weenie, action));
+            log.Debug($"[warp] added CreateWorldObject hook for {weenie}");
+        }
+
+        private static WorldObject warp_ExecuteHooks(WorldObject wo)
+        {
+            if (wo == null)
+                return null;
+            for (int i = 0; i < warp_CreateWorldObjectHooks.Count; i++)
+            {
+                if (warp_CreateWorldObjectHooks[i].Key == wo.WeenieType)
+                {
+                    warp_CreateWorldObjectHooks[i].Value(wo);
+                    log.Debug($"[warp] executed CreateWorldObject hook for {wo.Name}");
+                }
+            }
+            return wo;
+        }
+
         /// <summary>
         /// A new biota be created taking all of its values from weenie.
         /// </summary>
         public static WorldObject CreateWorldObject(Weenie weenie, ObjectGuid guid)
+        {
+            return warp_ExecuteHooks(CreateWorldObject2(weenie, guid));
+        }
+        private static WorldObject CreateWorldObject2(Weenie weenie, ObjectGuid guid)
         {
             if (weenie == null)
                 return null;
