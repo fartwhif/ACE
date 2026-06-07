@@ -300,7 +300,7 @@
     <Exec Command="if [ -f &quot;$(ProjectDir)Config.js&quot; ] ; then cp &quot;$(ProjectDir)Config.js&quot; &quot;$(TargetDir)Config.js&quot; ; fi&#xD;&#xA;if [ ! -f &quot;$(ProjectDir)log4net.config&quot; ] &amp;&amp; [ -f &quot;$(TargetDir)log4net.config&quot; ] ; then cp &quot;$(TargetDir)log4net.config&quot; &quot;$(ProjectDir)log4net.config&quot; ; fi&#xD;&#xA;if [ -f &quot;$(ProjectDir)log4net.config&quot; ] ; then cp &quot;$(ProjectDir)log4net.config&quot; &quot;$(TargetDir)log4net.config&quot; ; fi" Condition="'$(OS)' != 'Windows_NT'" />
   </Target>
 
-  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent" Condition="'$(OS)' == 'Windows_NT'">
     <Exec Command="rem modify and uncomment the following to aid in plugin development&#xA;set src=$(TargetDir)&#xA;set dst=C:\projects\ace\ACE-Plugins\Dependencies\ACE&#xA;robocopy &quot;%src% &quot; &quot;%dst% &quot; &quot;*.*&quot; /XO /NJH /NP&#xA;SET ERRORLEVEL = 0" />
   </Target>
 

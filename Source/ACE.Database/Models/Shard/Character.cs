@@ -31,6 +31,11 @@ public partial class Character
     public bool IsDeleted { get; set; }
 
     /// <summary>
+    /// Is this Character read-only (locked from modifications)?
+    /// </summary>
+    public bool IsReadOnly { get; set; }
+
+    /// <summary>
     /// The character will be marked IsDeleted=True after this timestamp
     /// </summary>
     public ulong DeleteTime { get; set; }

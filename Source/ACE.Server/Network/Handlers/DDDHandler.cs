@@ -46,53 +46,62 @@ namespace ACE.Server.Network.Handlers
                 {
                     case 1: // PORTAL
                         clientPortalDatIntSet = entry.List;
-                        if (entry.List.Iterations < DatManager.PortalDat.Iteration)
+                        if (DatManager.PortalDat != null)
                         {
-                            if (showDatWarning)
-                                session.DatWarnPortal = true;
+                            if (entry.List.Iterations < DatManager.PortalDat.Iteration)
+                            {
+                                if (showDatWarning)
+                                    session.DatWarnPortal = true;
 
-                            clientIsMissingIterations = true;
-                        }
-                        else if (entry.List.Iterations > DatManager.PortalDat.Iteration)
-                        {
-                            if (showDatWarning)
-                                session.DatWarnPortal = true;
+                                clientIsMissingIterations = true;
+                            }
+                            else if (entry.List.Iterations > DatManager.PortalDat.Iteration)
+                            {
+                                if (showDatWarning)
+                                    session.DatWarnPortal = true;
 
-                            clientHasExtraIterations = true;
+                                clientHasExtraIterations = true;
+                            }
                         }
                         break;
                     case 2: // CELL
                         clientCellDatIntSet = entry.List;
-                        if (entry.List.Iterations < DatManager.CellDat.Iteration)
+                        if (DatManager.CellDat != null)
                         {
-                            if (showDatWarning)
-                                session.DatWarnCell = true;
+                            if (entry.List.Iterations < DatManager.CellDat.Iteration)
+                            {
+                                if (showDatWarning)
+                                    session.DatWarnCell = true;
 
-                            clientIsMissingIterations = true;
-                        }
-                        else if (entry.List.Iterations > DatManager.CellDat.Iteration)
-                        {
-                            if (showDatWarning)
-                                session.DatWarnCell = true;
+                                clientIsMissingIterations = true;
+                            }
+                            else if (entry.List.Iterations > DatManager.CellDat.Iteration)
+                            {
+                                if (showDatWarning)
+                                    session.DatWarnCell = true;
 
-                            clientHasExtraIterations = true;
+                                clientHasExtraIterations = true;
+                            }
                         }
                         break;
                     case 3: // LANGUAGE
                         clientLanguageDatIntSet = entry.List;
-                        if (entry.List.Iterations < DatManager.LanguageDat.Iteration)
+                        if (DatManager.LanguageDat != null)
                         {
-                            if (showDatWarning)
-                                session.DatWarnLanguage = true;
+                            if (entry.List.Iterations < DatManager.LanguageDat.Iteration)
+                            {
+                                if (showDatWarning)
+                                    session.DatWarnLanguage = true;
 
-                            clientIsMissingIterations = true;
-                        }
-                        else if (entry.List.Iterations > DatManager.LanguageDat.Iteration)
-                        {
-                            if (showDatWarning)
-                                session.DatWarnLanguage = true;
+                                clientIsMissingIterations = true;
+                            }
+                            else if (entry.List.Iterations > DatManager.LanguageDat.Iteration)
+                            {
+                                if (showDatWarning)
+                                    session.DatWarnLanguage = true;
 
-                            clientHasExtraIterations = true;
+                                clientHasExtraIterations = true;
+                            }
                         }
                         break;
                 }
