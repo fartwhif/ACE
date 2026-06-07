@@ -32,6 +32,12 @@ namespace ACE.Server.Managers
         private static readonly Dictionary<uint, Player> onlinePlayers = new Dictionary<uint, Player>();
         private static readonly Dictionary<uint, OfflinePlayer> offlinePlayers = new Dictionary<uint, OfflinePlayer>();
 
+        // indexed by player name
+        private static readonly Dictionary<string, IPlayer> playerNames = new Dictionary<string, IPlayer>(StringComparer.OrdinalIgnoreCase);
+
+        // indexed by account id
+        private static readonly Dictionary<uint, Dictionary<uint, IPlayer>> playerAccounts = new Dictionary<uint, Dictionary<uint, IPlayer>>();
+
         /// <summary>
         /// OfflinePlayers will be saved to the database every 1 hour
         /// </summary>
@@ -52,15 +58,51 @@ namespace ACE.Server.Managers
 
                 lock (offlinePlayers)
                     offlinePlayers[offlinePlayer.Guid.Full] = offlinePlayer;
+
+                lock (playerNames)
+                    playerNames[offlinePlayer.Name] = offlinePlayer;
+
+                lock (playerAccounts)
+                {
+                    if (offlinePlayer.Account != null)
+                    {
+                        if (!playerAccounts.TryGetValue(offlinePlayer.Account.AccountId, out var playerAccountsDict))
+                        {
+                            playerAccountsDict = new Dictionary<uint, IPlayer>();
+                            playerAccounts[offlinePlayer.Account.AccountId] = playerAccountsDict;
+                        }
+                        playerAccountsDict[offlinePlayer.Guid.Full] = offlinePlayer;
+                    }
+                    else
+                        log.Error($"PlayerManager.Initialize: couldn't find account for player {offlinePlayer.Name} ({offlinePlayer.Guid})");
+                }
             });
         }
 
         private static readonly LinkedList<Player> playersPendingLogoff = new LinkedList<Player>();
 
+        private static readonly LinkedList<Player> playersPendingFinalLogoff = new LinkedList<Player>();
+
         public static void AddPlayerToLogoffQueue(Player player)
         {
             if (!playersPendingLogoff.Contains(player))
                 playersPendingLogoff.AddLast(player);
+        }
+
+        private static readonly TimeSpan playerFinalLogoutDuration = TimeSpan.FromMinutes(15);
+
+        public static void AddPlayerToFinalLogoffQueue(Player player)
+        {
+            if (!playersPendingFinalLogoff.Contains(player))
+            {
+                player.LogOffFinalizedTime = Time.GetFutureUnixTime(playerFinalLogoutDuration.TotalSeconds);
+                playersPendingFinalLogoff.AddLast(player);
+            }
+        }
+
+        public static void RemovePlayerFromFinalLogoffQueue(Player player)
+        {
+             playersPendingFinalLogoff.Remove(player);
         }
 
         public static void Tick()
@@ -80,6 +122,23 @@ namespace ACE.Server.Managers
                     playersPendingLogoff.RemoveFirst();
                     first.LogOut_Inner();
                     first.Session.logOffRequestTime = DateTime.UtcNow;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            while (playersPendingFinalLogoff.Count > 0)
+            {
+                var first = playersPendingFinalLogoff.First.Value;
+
+                if (currentUnixTime >= first.LogOffFinalizedTime)
+                {
+                    playersPendingFinalLogoff.RemoveFirst();
+                    first.ForcedLogOffRequested = true;
+                    first.Session?.Terminate(SessionTerminationReason.AutoForcedLogOff, new GameMessageBootAccount(" because the character was forced to log off by system"));
+                    first.ForceLogoff();
                 }
                 else
                 {
@@ -114,7 +173,7 @@ namespace ACE.Server.Managers
                 playersLock.ExitReadLock();
             }
 
-            DatabaseManager.Shard.SaveBiotasInParallel(biotas, result => { });
+            DatabaseManager.Shard.SaveBiotasInParallel(biotas, null, true);
         }
         
 
@@ -129,6 +188,15 @@ namespace ACE.Server.Managers
             {
                 var offlinePlayer = new OfflinePlayer(player.Biota);
                 offlinePlayers[offlinePlayer.Guid.Full] = offlinePlayer;
+
+                playerNames[offlinePlayer.Name] = offlinePlayer;
+
+                if (!playerAccounts.TryGetValue(offlinePlayer.Account.AccountId, out var playerAccountsDict))
+                {
+                    playerAccountsDict = new Dictionary<uint, IPlayer>();
+                    playerAccounts[offlinePlayer.Account.AccountId] = playerAccountsDict;
+                }
+                playerAccountsDict[offlinePlayer.Guid.Full] = offlinePlayer;
             }
             finally
             {
@@ -211,6 +279,20 @@ namespace ACE.Server.Managers
             allPlayers.AddRange(onlinePlayers);
 
             return allPlayers;
+        }
+
+        public static Dictionary<uint, IPlayer> GetAccountPlayers(uint accountId)
+        {
+            playersLock.EnterReadLock();
+            try
+            {
+                playerAccounts.TryGetValue(accountId, out var accountPlayers);
+                return accountPlayers;
+            }
+            finally
+            {
+                playersLock.ExitReadLock();
+            }
         }
 
         public static int GetOfflineCount()
@@ -347,6 +429,10 @@ namespace ACE.Server.Managers
 
                 if (!onlinePlayers.TryAdd(player.Guid.Full, player))
                     return false;
+
+                playerNames[offlinePlayer.Name] = player;
+
+                playerAccounts[offlinePlayer.Account.AccountId][offlinePlayer.Guid.Full] = player;
             }
             finally
             {
@@ -355,7 +441,7 @@ namespace ACE.Server.Managers
 
             AllegianceManager.LoadPlayer(player);
 
-            player.SendFriendStatusUpdates();
+            player.SendFriendStatusUpdates(false, !player.GetAppearOffline());
 
             return true;
         }
@@ -379,13 +465,17 @@ namespace ACE.Server.Managers
 
                 if (!offlinePlayers.TryAdd(offlinePlayer.Guid.Full, offlinePlayer))
                     return false;
+
+                playerNames[offlinePlayer.Name] = offlinePlayer;
+
+                playerAccounts[offlinePlayer.Account.AccountId][offlinePlayer.Guid.Full] = offlinePlayer;
             }
             finally
             {
                 playersLock.ExitWriteLock();
             }
 
-            player.SendFriendStatusUpdates(false);
+            player.SendFriendStatusUpdates(!player.GetAppearOffline(), false);
             player.HandleAllegianceOnLogout();
 
             return true;
@@ -412,6 +502,10 @@ namespace ACE.Server.Managers
             {
                 if (!offlinePlayers.Remove(guid, out var offlinePlayer))
                     return false; // This should never happen
+
+                playerNames.Remove(offlinePlayer.Name);
+
+                playerAccounts[offlinePlayer.Account.AccountId].Remove(offlinePlayer.Guid.Full);
             }
             finally
             {
@@ -438,27 +532,16 @@ namespace ACE.Server.Managers
             playersLock.EnterReadLock();
             try
             {
-                var onlinePlayer = onlinePlayers.Values.FirstOrDefault(p => p.Name.TrimStart('+').Equals(name.TrimStart('+'), StringComparison.OrdinalIgnoreCase));
+                playerNames.TryGetValue(name.TrimStart('+'), out var player);
 
-                if (onlinePlayer != null)
-                {
-                    isOnline = true;
-                    return onlinePlayer;
-                }
+                isOnline = player != null && player is Player;
 
-                isOnline = false;
-
-                var offlinePlayer = offlinePlayers.Values.FirstOrDefault(p => p.Name.TrimStart('+').Equals(name.TrimStart('+'), StringComparison.OrdinalIgnoreCase) && !p.IsPendingDeletion);
-
-                if (offlinePlayer != null)
-                    return offlinePlayer;
+                return player;
             }
             finally
             {
                 playersLock.ExitReadLock();
             }
-
-            return null;
         }
 
         /// <summary>
@@ -524,6 +607,7 @@ namespace ACE.Server.Managers
             playersLock.EnterReadLock();
             try
             {
+                // this kind of sucks, possibly investigate?
                 var onlinePlayersResult = onlinePlayers.Values.Where(p => p.MonarchId == monarch.Full);
                 var offlinePlayersResult = offlinePlayers.Values.Where(p => p.MonarchId == monarch.Full);
 

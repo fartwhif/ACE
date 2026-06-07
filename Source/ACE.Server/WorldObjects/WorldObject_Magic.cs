@@ -45,7 +45,7 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
-            if (spell.Flags.HasFlag(SpellFlags.FellowshipSpell))
+            if (spell.IsFellowshipSpell)
             {
                 if (target is not Player targetPlayer || targetPlayer.Fellowship == null)
                     return;
@@ -283,7 +283,7 @@ namespace ACE.Server.WorldObjects
                     if (itemCaster != null && (equip || itemCaster is Gem || itemCaster is Food))
                         CreateEnchantment(targetCreature ?? target, itemCaster, itemCaster, spell, equip);
                     else
-                        CreateEnchantment(targetCreature ?? target, this, this, spell, equip);
+                        CreateEnchantment(targetCreature ?? target, this, weapon, spell, equip, isWeaponSpell: isWeaponSpell);
 
                     break;
 
@@ -358,7 +358,7 @@ namespace ACE.Server.WorldObjects
             if (spell.CasterEffect != 0 && (!spell.IsProjectile || !projectileHit))
                 caster.EnqueueBroadcast(new GameMessageScript(caster.Guid, spell.CasterEffect, spell.Formula.Scale));
 
-            if (spell.TargetEffect != 0 && (!spell.IsProjectile || projectileHit))
+            if (spell.TargetEffect != 0 && (!spell.IsProjectile || projectileHit) && target != null)
             {
                 var targetBroadcaster = target.Wielder ?? target;
 
@@ -370,7 +370,7 @@ namespace ACE.Server.WorldObjects
         /// Handles casting SpellType.Enchantment / FellowEnchantment spells
         /// this is also called if SpellType.EnchantmentProjectile successfully hits
         /// </summary>
-        public void CreateEnchantment(WorldObject target, WorldObject caster, WorldObject weapon, Spell spell, bool equip = false, bool fromProc = false)
+        public void CreateEnchantment(WorldObject target, WorldObject caster, WorldObject weapon, Spell spell, bool equip = false, bool fromProc = false, bool isWeaponSpell = false)
         {
             // weird itemCaster -> caster collapsing going on here -- fixme
 
@@ -403,7 +403,7 @@ namespace ACE.Server.WorldObjects
             }
 
             // create enchantment
-            var addResult = target.EnchantmentManager.Add(spell, caster, weapon, equip);
+            var addResult = target.EnchantmentManager.Add(spell, caster, weapon, equip, isWeaponSpell);
 
             // build message
             var suffix = "";
@@ -476,8 +476,9 @@ namespace ACE.Server.WorldObjects
             var player = this as Player;
             var creature = this as Creature;
 
-            // double check caster and target are alive
-            if (creature != null && creature.IsDead || targetCreature != null && targetCreature.IsDead)
+            // prevent double deaths from indirect casts
+            // caster is already checked in player/monster, and re-checking caster here would break death emotes such as bunny smite
+            if (targetCreature != null && targetCreature.IsDead)
                 return;
 
             // handle negatives?
@@ -700,8 +701,9 @@ namespace ACE.Server.WorldObjects
 
             var targetPlayer = targetCreature as Player;
 
-            // double check caster and target are alive
-            if (creature != null && creature.IsDead || targetCreature != null && targetCreature.IsDead)
+            // prevent double deaths from indirect casts
+            // caster is already checked in player/monster, and re-checking caster here would break death emotes such as bunny smite
+            if (targetCreature != null && targetCreature.IsDead)
                 return;
 
             // source and destination can be the same creature, or different creatures
@@ -898,19 +900,19 @@ namespace ACE.Server.WorldObjects
 
             if (spell.School == MagicSchool.LifeMagic)
             {
-                if (spell.Name.Contains("Blight"))
+                if (spell.DamageType.HasFlag(DamageType.Mana))
                 {
                     var tryDamage = (int)Math.Round(caster.GetCreatureVital(PropertyAttribute2nd.Mana).Current * spell.DrainPercentage);
                     damage = (uint)-caster.UpdateVitalDelta(caster.Mana, -tryDamage);
                     damageType = DamageType.Mana;
                 }
-                else if (spell.Name.Contains("Tenacity"))
+                else if (spell.DamageType.HasFlag(DamageType.Stamina))
                 {
                     var tryDamage = (int)Math.Round(caster.GetCreatureVital(PropertyAttribute2nd.Stamina).Current * spell.DrainPercentage);
                     damage = (uint)-caster.UpdateVitalDelta(caster.Stamina, -tryDamage);
                     damageType = DamageType.Stamina;
                 }
-                else
+                else if (spell.DamageType.HasFlag(DamageType.Health))
                 {
                     var tryDamage = (int)Math.Round(caster.GetCreatureVital(PropertyAttribute2nd.Health).Current * spell.DrainPercentage);
                     damage = (uint)-caster.UpdateVitalDelta(caster.Health, -tryDamage);
@@ -918,7 +920,17 @@ namespace ACE.Server.WorldObjects
                     damageType = DamageType.Health;
 
                     //if (player != null && player.Fellowship != null)
-                        //player.Fellowship.OnVitalUpdate(player);
+                    //player.Fellowship.OnVitalUpdate(player);
+                }
+                else if(spell.DamageType != DamageType.Undef)
+                {
+                    // Handle rare case where some of these "Life Magic" spells do physical damage e.g. Hunter's Lash 2970 and Thorn Valley 6159
+                    damageType = spell.DamageType;
+                }
+                else
+                {
+                    log.Warn($"Unknown DamageType ({spell.DamageType}) for LifeProjectile {spell.Name} - {spell.Id}");
+                    return;
                 }
             }
 
@@ -1288,6 +1300,8 @@ namespace ACE.Server.WorldObjects
             gateway.Quest = portal.Quest;
             gateway.QuestRestriction = portal.QuestRestriction;
 
+            gateway.Biota.PropertiesEmote = portal.Biota.PropertiesEmote;
+
             gateway.PortalRestrictions |= PortalBitmask.NoSummon; // all gateways are marked NoSummon but by default ruleset, the OriginalPortal is the one that is checked against
 
             gateway.EnterWorld();
@@ -1353,7 +1367,7 @@ namespace ACE.Server.WorldObjects
 
             var distanceToTarget = creature.GetDistance(targetPlayer);
             var skill = creature.GetCreatureSkill(spell.School);
-            var magicSkill = skill.InitLevel + skill.Ranks;     // ?? - this probably isn't right, should be either base or current
+            var magicSkill = skill.InitLevel + skill.Ranks;     // synced with acclient DetermineSpellRange -> InqSkillLevel
 
             var maxRange = spell.BaseRangeConstant + magicSkill * spell.BaseRangeMod;
             if (maxRange == 0.0f)
@@ -1509,7 +1523,7 @@ namespace ACE.Server.WorldObjects
             return LaunchSpellProjectiles(spell, target, spellType, weapon, isWeaponSpell, fromProc, origins, velocity, lifeProjectileDamage);
         }
 
-        public static readonly float ProjHeight = 2.0f / 3.0f;
+        public const float ProjHeight = 2.0f / 3.0f;
 
         public Vector3 CalculatePreOffset(Spell spell, ProjectileSpellType spellType, WorldObject target)
         {
@@ -1673,7 +1687,7 @@ namespace ACE.Server.WorldObjects
 
         public static readonly Quaternion OneEighty = Quaternion.CreateFromAxisAngle(Vector3.UnitZ, (float)Math.PI);
 
-        public static readonly float ProjHeightArc = 5.0f / 6.0f;
+        public const float ProjHeightArc = 5.0f / 6.0f;
 
         /// <summary>
         /// Calculates the spell projectile velocity in global space
@@ -2186,7 +2200,7 @@ namespace ACE.Server.WorldObjects
             IsAffecting = false;
         }
 
-        private static readonly double defaultIgnoreSomeMagicProjectileDamage = 0.25;
+        private const double defaultIgnoreSomeMagicProjectileDamage = 0.25;
 
         public double? GetAbsorbMagicDamage()
         {

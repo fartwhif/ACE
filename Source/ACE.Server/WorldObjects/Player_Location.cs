@@ -198,6 +198,12 @@ namespace ACE.Server.WorldObjects
 
         public void HandleActionTeleToMarketPlace()
         {
+            if (IsOlthoiPlayer)
+            {
+                Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.OlthoiCanOnlyRecallToLifestone));
+                return;
+            }
+
             if (PKTimerActive)
             {
                 Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.YouHaveBeenInPKBattleTooRecently));
@@ -260,6 +266,12 @@ namespace ACE.Server.WorldObjects
         public void HandleActionRecallAllegianceHometown()
         {
             //Console.WriteLine($"{Name}.HandleActionRecallAllegianceHometown()");
+
+            if (IsOlthoiPlayer)
+            {
+                Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.OlthoiCanOnlyRecallToLifestone));
+                return;
+            }
 
             if (PKTimerActive)
             {
@@ -348,6 +360,12 @@ namespace ACE.Server.WorldObjects
         {
             //Console.WriteLine($"{Name}.HandleActionTeleToMansion()");
 
+            if (IsOlthoiPlayer)
+            {
+                Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.OlthoiCanOnlyRecallToLifestone));
+                return;
+            }
+
             if (PKTimerActive)
             {
                 Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.YouHaveBeenInPKBattleTooRecently));
@@ -432,7 +450,7 @@ namespace ACE.Server.WorldObjects
                 return null;
             }
 
-            if (allegianceHouse.HouseType < HouseType.Villa)
+            if (allegianceHouse.HouseType != HouseType.Villa && allegianceHouse.HouseType != HouseType.Mansion)
             {
                 Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.YourMonarchsHouseIsNotAMansionOrVilla));
                 return null;
@@ -540,6 +558,12 @@ namespace ACE.Server.WorldObjects
         public void HandleActionTeleToPklArena()
         {
             //Console.WriteLine($"{Name}.HandleActionTeleToPkLiteArena()");
+
+            if (IsOlthoiPlayer)
+            {
+                Session.Network.EnqueueSend(new GameEventWeenieError(Session, WeenieError.OlthoiCanOnlyRecallToLifestone));
+                return;
+            }
 
             if (PlayerKillerStatus != PlayerKillerStatus.PKLite)
             {
@@ -768,7 +792,7 @@ namespace ACE.Server.WorldObjects
                 CurrentLandblock?.SetActive();
         }
 
-        public static readonly float RunFactor = 1.5f;
+        public const float RunFactor = 1.5f;
 
         /// <summary>
         /// Returns the amount of time for player to rotate by the # of degrees

@@ -35,7 +35,7 @@ namespace ACE.Database
                 {
                     if (((RelationalDatabaseCreator)context.Database.GetService<IDatabaseCreator>()).Exists())
                     {
-                        log.Debug($"[DATABASE] Successfully connected to {config.Database} database on {config.Host}:{config.Port}.");
+                        log.InfoFormat("[DATABASE] Successfully connected to {0} database on {1}:{2}.", config.Database, config.Host, config.Port);
                         return true;
                     }
                 }
@@ -94,8 +94,11 @@ namespace ACE.Database
                       "  JOIN biota"                                                                    + Environment.NewLine +
                       "  WHERE id > " + min                                                             + Environment.NewLine +
                       "  ORDER BY id"                                                                   + Environment.NewLine +
-                      " ) AS z"                                                                         + Environment.NewLine +
-                      "WHERE z.gap_ends_at_not_inclusive!=0 AND @available_ids<" + limitAvailableIDsReturned + "; ";
+                      " ) AS z" + Environment.NewLine;
+            if (limitAvailableIDsReturned != uint.MaxValue)
+                sql += "WHERE z.gap_ends_at_not_inclusive!=0 AND @available_ids<" + limitAvailableIDsReturned + "; ";
+            else
+                sql += "WHERE z.gap_ends_at_not_inclusive!=0;";
 
             using (var context = new ShardDbContext())
             {
@@ -129,8 +132,35 @@ namespace ACE.Database
                 return context.Biota.Count();
         }
 
+        public int GetEstimatedBiotaCount(string dbName)
+        {
+            // https://mariadb.com/kb/en/incredibly-slow-count-on-mariadb-mysql/
+
+            var sql = $"SELECT TABLE_ROWS FROM information_schema.tables" + Environment.NewLine +
+                      $"WHERE TABLE_SCHEMA = '{dbName}'" + Environment.NewLine +
+                      $"AND TABLE_NAME = 'biota';";
+
+            using (var context = new ShardDbContext())
+            {
+                var connection = context.Database.GetDbConnection();
+                connection.Open();
+                var command = connection.CreateCommand();
+                command.CommandText = sql;
+                var reader = command.ExecuteReader();
+
+                var biotaEstimatedCount = 0;
+
+                while (reader.Read())
+                {
+                    biotaEstimatedCount = reader.GetFieldValue<int>(0);
+                }
+
+                return biotaEstimatedCount;
+            }    
+        }
+
         [Flags]
-        enum PopulatedCollectionFlags
+        public enum PopulatedCollectionFlags
         {
             BiotaPropertiesAnimPart             = 0x1,
             BiotaPropertiesAttribute            = 0x2,
@@ -159,7 +189,7 @@ namespace ACE.Database
             BiotaPropertiesAllegiance           = 0x1000000,
         }
 
-        protected static void SetBiotaPopulatedCollections(Biota biota)
+        public static void SetBiotaPopulatedCollections(Biota biota)
         {
             PopulatedCollectionFlags populatedCollectionFlags = 0;
 
@@ -290,7 +320,7 @@ namespace ACE.Database
                 context.SaveChanges();
 
                 if (firstException != null)
-                    log.Debug($"[DATABASE] DoSaveBiota 0x{biota.Id:X8}:{biota.GetProperty(PropertyString.Name)} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+                    log.InfoFormat("[DATABASE] DoSaveBiota 0x{0:X8}:{1} retry succeeded after initial exception of: {2}", biota.Id, biota.GetProperty(PropertyString.Name), firstException.GetFullMessage());
 
                 return true;
             }
@@ -309,11 +339,11 @@ namespace ACE.Database
             }
         }
 
-        public virtual bool SaveBiota(ACE.Entity.Models.Biota biota, ReaderWriterLockSlim rwLock)
+        public virtual bool SaveBiota(ACE.Entity.Models.Biota biota, ReaderWriterLockSlim rwLock, bool doNotAddToCache = false)
         {
             using (var context = new ShardDbContext())
             {
-                var existingBiota = GetBiota(context, biota.Id);
+                var existingBiota = GetBiota(context, biota.Id, doNotAddToCache);
 
                 rwLock.EnterReadLock();
                 try
@@ -338,13 +368,13 @@ namespace ACE.Database
             }
         }
 
-        public bool SaveBiotasInParallel(IEnumerable<(ACE.Entity.Models.Biota biota, ReaderWriterLockSlim rwLock)> biotas)
+        public bool SaveBiotasInParallel(IEnumerable<(ACE.Entity.Models.Biota biota, ReaderWriterLockSlim rwLock)> biotas, bool doNotAddToCache = false)
         {
             var result = true;
 
             Parallel.ForEach(biotas, ConfigManager.Config.Server.Threading.DatabaseParallelOptions, biota =>
             {
-                if (!SaveBiota(biota.biota, biota.rwLock))
+                if (!SaveBiota(biota.biota, biota.rwLock, doNotAddToCache))
                     result = false;
             });
 
@@ -372,7 +402,7 @@ namespace ACE.Database
                     context.SaveChanges();
 
                     if (firstException != null)
-                        log.Debug($"[DATABASE] RemoveBiota 0x{id:X8} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+                        log.InfoFormat("[DATABASE] RemoveBiota 0x{0:X8} retry succeeded after initial exception of: {1}", id, firstException.GetFullMessage());
 
                     return true;
                 }
@@ -589,17 +619,28 @@ namespace ACE.Database
 
             var results = query.ToList();
 
-            query.Include(r => r.CharacterPropertiesContractRegistry).Load();
-            query.Include(r => r.CharacterPropertiesFillCompBook).Load();
-            query.Include(r => r.CharacterPropertiesFriendList).Load();
-            query.Include(r => r.CharacterPropertiesQuestRegistry).Load();
-            query.Include(r => r.CharacterPropertiesShortcutBar).Load();
-            query.Include(r => r.CharacterPropertiesSpellBar).Load();
-            query.Include(r => r.CharacterPropertiesSquelch).Load();
-            query.Include(r => r.CharacterPropertiesTitleBook).Load();
+            for (int i = 0; i < results.Count; i++)
+            {
+                // Do we have a reference to this Character already?
+                var existingChar = CharacterContexts.FirstOrDefault(r => r.Key.Id == results[i].Id);
 
-            foreach (var result in results)
-                CharacterContexts.Add(result, context);
+                if (existingChar.Key != null)
+                    results[i] = existingChar.Key;
+                else
+                {
+                    // No reference, pull all the properties and add it to the cache
+                    query.Include(r => r.CharacterPropertiesContractRegistry).Load();
+                    query.Include(r => r.CharacterPropertiesFillCompBook).Load();
+                    query.Include(r => r.CharacterPropertiesFriendList).Load();
+                    query.Include(r => r.CharacterPropertiesQuestRegistry).Load();
+                    query.Include(r => r.CharacterPropertiesShortcutBar).Load();
+                    query.Include(r => r.CharacterPropertiesSpellBar).Load();
+                    query.Include(r => r.CharacterPropertiesSquelch).Load();
+                    query.Include(r => r.CharacterPropertiesTitleBook).Load();
+
+                    CharacterContexts.Add(results[i], context);
+                }
+            }
 
             return results;
         }
@@ -654,7 +695,7 @@ namespace ACE.Database
                         cachedContext.SaveChanges();
 
                         if (firstException != null)
-                            log.Debug($"[DATABASE] SaveCharacter-1 0x{character.Id:X8}:{character.Name} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+                            log.InfoFormat("[DATABASE] SaveCharacter-1 0x{0:X8}:{1} retry succeeded after initial exception of: {2}", character.Id, character.Name, firstException.GetFullMessage());
 
                         return true;
                     }
@@ -695,7 +736,7 @@ namespace ACE.Database
                     context.SaveChanges();
 
                     if (firstException != null)
-                        log.Debug($"[DATABASE] SaveCharacter-2 0x{character.Id:X8}:{character.Name} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+                        log.InfoFormat("[DATABASE] SaveCharacter-2 0x{0:X8}:{1} retry succeeded after initial exception of: {2}", character.Id, character.Name, firstException.GetFullMessage());
 
                     return true;
                 }
@@ -847,7 +888,7 @@ namespace ACE.Database
                         cachedContext.SaveChanges();
 
                         if (firstException != null)
-                            log.Debug($"[DATABASE] RenameCharacter 0x{character.Id:X8}:{character.Name} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+                            log.InfoFormat("[DATABASE] RenameCharacter 0x{0:X8}:{1} retry succeeded after initial exception of: {2}", character.Id, character.Name, firstException.GetFullMessage());
 
                         return true;
                     }
@@ -890,7 +931,7 @@ namespace ACE.Database
                     context.SaveChanges();
 
                     if (firstException != null)
-                        log.Debug($"[DATABASE] RenameCharacter 0x{character.Id:X8}:{character.Name} retry succeeded after initial exception of: {firstException.GetFullMessage()}");
+                        log.InfoFormat("[DATABASE] RenameCharacter 0x{0:X8}:{1} retry succeeded after initial exception of: {2}", character.Id, character.Name, firstException.GetFullMessage());
 
                     return true;
                 }

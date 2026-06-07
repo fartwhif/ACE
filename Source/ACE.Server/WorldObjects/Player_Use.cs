@@ -209,7 +209,7 @@ namespace ACE.Server.WorldObjects
             }
             else
             {
-                log.Debug($"{Name}.HandleActionUseItem({itemGuid:X8}): couldn't find object");
+                log.DebugFormat("{0}.HandleActionUseItem({1:X8}): couldn't find object", Name, itemGuid);
                 SendUseDoneEvent();
             }
         }
@@ -264,12 +264,6 @@ namespace ACE.Server.WorldObjects
         }
 
         public Pet CurrentActivePet { get; set; }
-
-        public void StartBarber()
-        {
-            BarberActive = true;
-            Session.Network.EnqueueSend(new GameEventStartBarber(Session));
-        }
 
         public void ApplyConsumable(MotionCommand useMotion, Action action, float animMod = 1.0f)
         {

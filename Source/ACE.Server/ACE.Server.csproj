@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net6.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <Platforms>x64</Platforms>
   </PropertyGroup>
 
@@ -13,6 +13,7 @@
 
   <PropertyGroup>
     <ServerGarbageCollection>true</ServerGarbageCollection>
+    <GarbageCollectionAdaptationMode>1</GarbageCollectionAdaptationMode>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <RetainVMGarbageCollection>true</RetainVMGarbageCollection>
   </PropertyGroup>
@@ -22,7 +23,7 @@
     <RepositoryType>git</RepositoryType>
     <RepositoryUrl>https://github.com/ACEmulator/ACE</RepositoryUrl>
     <PackageProjectUrl>https://emulator.ac</PackageProjectUrl>
-    <Copyright>© 2017-2022 ACEmulator Team and Contributors</Copyright>
+    <Copyright>© 2017-2026 ACEmulator Team and Contributors</Copyright>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
     <Description>Asheron's Call server emulator</Description>
     <Company>ACEmulator</Company>
@@ -234,11 +235,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="log4net" Version="2.0.14" />
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" />
+    <PackageReference Include="log4net" Version="2.0.17" />
     <PackageReference Include="Log4Net.Async.Standard" Version="3.1.0" />
-    <PackageReference Include="MySql.Data" Version="8.0.29" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
-    <PackageReference Include="System.Text.Encoding.CodePages" Version="6.0.0" />
+    <PackageReference Include="McMaster.NETCore.Plugins" Version="2.0.0" />
+    <PackageReference Include="MySqlConnector" Version="2.5.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -278,6 +279,9 @@
     <None Update="start_server.bat">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="start_server.sh">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
   <ItemGroup>
@@ -286,14 +290,6 @@
     <None Include="..\..\Database\Updates\**" CopyToOutputDirectory="PreserveNewest" LinkBase="DatabaseSetupScripts\Updates\" />
     <None Include="..\..\Database\Optional\**" CopyToOutputDirectory="PreserveNewest" LinkBase="DatabaseSetupScripts\Optional\" />
   </ItemGroup>
-
-  <Target Name="ChangeAliasesOfStrongNameAssemblies" BeforeTargets="FindReferenceAssembliesForReferences;ResolveReferences">
-    <ItemGroup>
-      <ReferencePath Condition="'%(FileName)' == 'MySqlConnector'">
-        <Aliases>MySqlConnectorAlias</Aliases>
-      </ReferencePath>
-    </ItemGroup>
-  </Target>
 
   <Target Name="PreBuild" BeforeTargets="PreBuildEvent">
     <Exec Command="if exist &quot;$(ProjectDir)Config.js&quot; copy &quot;$(ProjectDir)Config.js&quot; &quot;$(TargetDir)Config.js&quot;&#xD;&#xA;if not exist &quot;$(ProjectDir)log4net.config&quot; if exist &quot;$(TargetDir)log4net.config&quot; copy &quot;$(TargetDir)log4net.config&quot; &quot;$(ProjectDir)log4net.config&quot;&#xD;&#xA;if exist &quot;$(ProjectDir)log4net.config&quot; copy &quot;$(ProjectDir)log4net.config&quot; &quot;$(TargetDir)log4net.config&quot;" Condition="'$(OS)' == 'Windows_NT'" />
