@@ -7,7 +7,7 @@ services:
     env_file:
       - docker.env
     volumes:
-      - ./db-data:/var/lib/mysql
+      - ace-db-data:/var/lib/mysql
     ports:
       - "3306:3306/tcp"
     restart: unless-stopped
@@ -29,8 +29,13 @@ services:
       - ./Dats:/ace/Dats
       - ./Logs:/ace/Logs
       - ./Mods:/ace/Mods
+      - ./Plugins:/ace/Plugins
     ports:
       - "9000-9001:9000-9001/udp"
+      - "9002:9002/tcp"
     stdin_open: true
     #restart: unless-stopped
     restart: on-failure
+volumes:
+
+  ace-db-data:
