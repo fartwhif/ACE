@@ -84,7 +84,7 @@ namespace ACE.Server.WorldObjects.Managers
                     {
                         // ActOnUse delay?
                         var activationTarget = WorldObject.CurrentLandblock?.GetObject(WorldObject.ActivationTarget);
-                        activationTarget?.OnActivate(WorldObject);
+                        activationTarget?.OnActivate(player ?? WorldObject);
                     }
                     else if (WorldObject.GeneratorId.HasValue && WorldObject.GeneratorId > 0) // Fallback to linked generator
                     {
@@ -253,7 +253,7 @@ namespace ACE.Server.WorldObjects.Managers
 
                         var treasureType = (TreasureItemCategory?)emote.TreasureType ?? TreasureItemCategory.Undef;
 
-                        var treasureClass = (TreasureItemType_Orig?)emote.TreasureClass ?? TreasureItemType_Orig.Undef;
+                        var treasureClass = (TreasureItemType?)emote.TreasureClass ?? TreasureItemType.Undef;
 
                         // Create a dummy treasure profile for passing emote values
                         var profile = new Database.Models.World.TreasureDeath
@@ -276,7 +276,7 @@ namespace ACE.Server.WorldObjects.Managers
                             UnknownChances = 21
                         };
 
-                        var treasure = LootGenerationFactory.CreateRandomLootObjects_New(profile, treasureType, treasureClass);
+                        var treasure = LootGenerationFactory.CreateRandomLootObjects(profile, treasureType, treasureClass);
                         if (treasure != null)
                         {
                             player.TryCreateForGive(WorldObject, treasure);
@@ -483,7 +483,7 @@ namespace ACE.Server.WorldObjects.Managers
                 case EmoteType.InqFellowNum:
 
                     // unused in PY16 - ensure # of fellows between min-max?
-                    var result = EmoteCategory.TestNoFellow;
+                    var result = HasValidTestNoFellow(emote.Message) ? EmoteCategory.TestNoFellow : EmoteCategory.NumFellowsFailure;
 
                     if (player?.Fellowship != null)
                     {
@@ -569,8 +569,12 @@ namespace ACE.Server.WorldObjects.Managers
 
                 case EmoteType.InqNumCharacterTitles:
 
-                    //if (player != null)
-                    //InqCategory(player.NumCharacterTitles != 0 ? EmoteCategory.TestSuccess : EmoteCategory.TestFailure, emote);
+                    if (player != null)
+                    {
+                        var numTitles = player.NumCharacterTitles;
+                        success = numTitles != null && numTitles >= (emote.Min ?? int.MinValue) && numTitles <= (emote.Max ?? int.MaxValue);
+                        ExecuteEmoteSet(success ? EmoteCategory.NumCharacterTitlesSuccess : EmoteCategory.NumCharacterTitlesFailure, emote.Message, targetObject, true);
+                    }
                     break;
 
                 case EmoteType.InqOwnsItems:
@@ -1043,7 +1047,8 @@ namespace ACE.Server.WorldObjects.Managers
                         var currentPos = creature.Location;
 
                         var newPos = new Position();
-                        newPos.LandblockId = new LandblockId(currentPos.LandblockId.Raw);
+                        newPos.LandblockId = new LandblockId(emote.ObjCellId ?? currentPos.LandblockId.Raw);
+
                         newPos.Pos = new Vector3(emote.OriginX ?? currentPos.Pos.X, emote.OriginY ?? currentPos.Pos.Y, emote.OriginZ ?? currentPos.Pos.Z);
 
                         if (emote.AnglesX == null || emote.AnglesY == null || emote.AnglesZ == null || emote.AnglesW == null)
@@ -1494,7 +1499,7 @@ namespace ACE.Server.WorldObjects.Managers
                     break;
 
                 default:
-                    log.Debug($"EmoteManager.Execute - Encountered Unhandled EmoteType {(EmoteType)emote.Type} for {WorldObject.Name} ({WorldObject.WeenieClassId})");
+                    log.DebugFormat("EmoteManager.Execute - Encountered Unhandled EmoteType {0} for {1} ({2})", (EmoteType)emote.Type, WorldObject.Name, WorldObject.WeenieClassId);
                     break;
             }
 
@@ -1736,6 +1741,8 @@ namespace ACE.Server.WorldObjects.Managers
         }
 
         public bool HasValidTestNoQuality(string testName) => GetEmoteSet(EmoteCategory.TestNoQuality, testName) != null;
+
+        public bool HasValidTestNoFellow(string testName) => GetEmoteSet(EmoteCategory.TestNoFellow, testName) != null;
 
         /// <summary>
         /// The maximum animation range of the client
@@ -1990,6 +1997,9 @@ namespace ACE.Server.WorldObjects.Managers
 
         public void OnDeath(DamageHistoryInfo lastDamagerInfo)
         {
+            if (GetEmoteSet(EmoteCategory.Death) == null)
+                return;
+            
             IsBusy = false;
 
             var lastDamager = lastDamagerInfo?.TryGetPetOwnerOrAttacker();

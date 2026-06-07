@@ -265,6 +265,18 @@ namespace ACE.Server.WorldObjects
             lastPlayerInfo = new WorldObjectInfo(player);
         }
 
+        private void PrepareResetToHome()
+        {
+            // Reset to Home position
+            var resetInterval = ResetInterval ?? 300;
+            ResetTimestamp = Time.GetFutureUnixTime(resetInterval);
+
+            var autoResetTimer = new ActionChain();
+            autoResetTimer.AddDelaySeconds(resetInterval);
+            autoResetTimer.AddAction(this, () => CheckResetToHome());
+            autoResetTimer.EnqueueChain();
+        }
+
         /// <summary>
         /// Sends the latest vendor inventory list to player, rotates vendor towards player, and performs the appropriate emote.
         /// </summary>
@@ -281,6 +293,8 @@ namespace ACE.Server.WorldObjects
                 DoVendorEmote(action, player);
 
             player.LastOpenedContainerId = Guid;
+
+            PrepareResetToHome();
         }
 
         public void DoVendorEmote(VendorType vendorType, WorldObject player)
@@ -305,7 +319,7 @@ namespace ACE.Server.WorldObjects
             }
         }
 
-        private static readonly float closeInterval = 1.5f;
+        private const float closeInterval = 1.5f;
 
         /// <summary>
         /// After a player approaches a vendor, this is called every closeInterval seconds
@@ -350,6 +364,26 @@ namespace ACE.Server.WorldObjects
             closeChain.AddDelaySeconds(closeInterval);
             closeChain.AddAction(this, CheckClose);
             closeChain.EnqueueChain();
+        }
+
+        public void CheckResetToHome()
+        {
+            if (Time.GetUnixTime() >= ResetTimestamp)
+            {
+                // are we already at home origin?
+                if (Location.Pos.Equals(Home.Pos))
+                {
+                    // just turnto if required?
+                    if (!Location.Rotation.Equals(Home.Rotation))
+                    {
+                        TurnTo(Home);
+                    }
+                }
+                else
+                {
+                    MoveTo(Home, GetRunRate(), true, null, 1);
+                }
+            }
         }
 
         /// <summary>
@@ -691,7 +725,7 @@ namespace ACE.Server.WorldObjects
             {
                 foreach (var itemToRemove in itemsToRemove)
                 {
-                    log.Debug($"[VENDOR] Vendor {Name} has discontinued sale of {itemToRemove.Name} and removed it from its UniqueItemsForSale list.");
+                    log.DebugFormat("[VENDOR] Vendor {0} has discontinued sale of {1} and removed it from its UniqueItemsForSale list.", Name, itemToRemove.Name);
                     UniqueItemsForSale.Remove(itemToRemove.Guid);
 
                     itemToRemove.Destroy();     // even though it has already been removed from the db at this point, we want to mark as freed in guid manager now

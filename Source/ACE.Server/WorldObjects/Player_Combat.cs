@@ -530,7 +530,7 @@ namespace ACE.Server.WorldObjects
 
             if (!BodyParts.Indices.TryGetValue(bodyPart, out var iDamageLocation))
             {
-                log.Error($"{Name}.TakeDamage({source.Name}, {damageType}, {amount}, {bodyPart}, {crit}): avoided crash for bad damage location");
+                log.Warn($"{Name}.TakeDamage({source.Name}, {damageType}, {amount}, {bodyPart}, {crit}): avoided crash for bad damage location");
                 return 0;
             }
             var damageLocation = (DamageLocation)iDamageLocation;
@@ -729,7 +729,7 @@ namespace ACE.Server.WorldObjects
 
         public CombatMode LastCombatMode;
 
-        public static readonly float UseTimeEpsilon = 0.05f;
+        public const float UseTimeEpsilon = 0.05f;
 
         /// <summary>
         /// This method processes the Game Action (F7B1) Change Combat Mode (0x0053)
@@ -813,14 +813,26 @@ namespace ACE.Server.WorldObjects
 
                     // todo expand checks
                     if (!forceHandCombat && (missileWeapon != null || caster != null))
+                    {
+                        // client has already independently brought the melee bar up by this point, revert and sync everything back up
+                        SetCombatMode(CombatMode.NonCombat);
                         return;
+                    }
 
                     break;
 
                 case CombatMode.Missile:
                     {
                         if (missileWeapon == null)
+                        {
+                            // client has already independently switched to missile mode by this point,
+                            // so instead of simply returning here, we need to deny the request by reverting to either the current server combat state, or switching to NonCombat to maintain client sync
+                            // this is especially important for missile, because the client is unable to break out of this bugged state for this mode specifically
+                            // see: ClientCombatSystem::PlayerInReadyPosition
+
+                            SetCombatMode(CombatMode.NonCombat);
                             return;
+                        }
 
                         switch (currentCombatStance)
                         {
@@ -861,7 +873,11 @@ namespace ACE.Server.WorldObjects
 
                     // todo expand checks
                     if (caster == null)
+                    {
+                        // client has already independently brought the magic bar up by this point, revert and sync everything back up
+                        SetCombatMode(CombatMode.NonCombat);
                         return;
+                    }
 
                     break;
 

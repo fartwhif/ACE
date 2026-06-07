@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 
 using log4net;
@@ -42,10 +43,18 @@ namespace ACE.Server.Network.Managers
 
                 listeners[(i * 2) + 1] = new ConnectionListener(hosts[i], ConfigManager.Config.Server.Network.Port + 1);
                 log.Info($"Binding ConnectionListener to {hosts[i]}:{ConfigManager.Config.Server.Network.Port + 1}");
-
-                listeners[(i * 2) + 0].Start();
+                
                 listeners[(i * 2) + 1].Start();
+                listeners[(i * 2) + 0].Start();
             }
         }
+
+        /// <summary>
+        /// Given a ConnectionListener, return its matched ConnectionListener.
+        /// <para>C2S ConnectionListener returns S2C ConnectionListener</para>
+        /// <para>S2C ConnectionListener returns C2S ConnectionListener</para>
+        /// </summary>
+        public static ConnectionListener GetMatchedConnectionListener(ConnectionListener connectionListener) =>
+            listeners.Where(c => c.ListenerEndpoint.Address == connectionListener.ListenerEndpoint.Address && c.ListenerEndpoint.Port != connectionListener.ListenerEndpoint.Port).FirstOrDefault();
     }
 }

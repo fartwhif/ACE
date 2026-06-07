@@ -81,7 +81,7 @@ namespace ACE.Server.Entity
                 Formula = new SpellFormula(this, _formula);
 
             if (loadDB && (_spell == null || _spellBase == null))
-                log.Debug($"Spell.Init(spellID = {spellID}, loadDB = {loadDB}) failed! {(_spell == null ? "_spell was null" : "")} {(_spellBase == null ? "_spellBase was null" : "")}");
+                log.DebugFormat("Spell.Init(spellID = {0}, loadDB = {1}) failed! {2} {3}", spellID, loadDB, (_spell == null ? "_spell was null" : ""), (_spellBase == null ? "_spellBase was null" : ""));
         }
 
         /// <summary>
@@ -131,7 +131,28 @@ namespace ACE.Server.Entity
 
         public bool IsTracking => !Flags.HasFlag(SpellFlags.NonTrackingProjectile);
 
-        public bool IsFellowshipSpell => Flags.HasFlag(SpellFlags.FellowshipSpell);
+        public bool IsFellowshipSpell
+        {
+            get
+            {
+                // some spells are missing SpellFlags.FellowshipSpell:
+                // 3043 - Kiss of the Grave
+                // 3320 - Lesser Corrosive Ward
+                // 3375 - Fungal Bloom
+                // 3470 - Lesser Endless Well
+                // 3474 - Lesser Soothing Wind
+                // 3478 - Lesser Golden Wind
+
+                // some spells have SpellFlags.FellowshipSpell, but aren't an actual Fellow* MetaSpellType:
+                // 3337 - Inferno Ward (Enchantment)
+                // 3381 - Debilitating Spore (Boost)
+                // 3382 - Diseased Air (Boost)
+                // 3406 - Kivik Lir's Boon (Enchantment)
+
+                return Flags.HasFlag(SpellFlags.FellowshipSpell) ||
+                    MetaSpellType >= SpellType.FellowBoost && MetaSpellType <= SpellType.FellowDispel;
+            }
+        }
 
         public List<uint> TryBurnComponents(Player player)
         {

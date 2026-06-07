@@ -7,7 +7,7 @@ namespace ACE.DatLoader
 {
     public class DatFile : IUnpackable
     {
-        internal static readonly uint ObjectSize = (sizeof(uint) * 6);
+        internal const uint ObjectSize = (sizeof(uint) * 6);
 
         
         //public uint BitFlags { get; private set; }
@@ -18,9 +18,9 @@ namespace ACE.DatLoader
 
         public uint FileSize { get; private set; }
 
-        //public uint Date { get; private set; }
+        public uint Date { get; private set; }
 
-        //public uint Iteration { get; private set; }
+        public uint Iteration { get; private set; }
 
         public void Unpack(BinaryReader reader)
         {
@@ -28,8 +28,8 @@ namespace ACE.DatLoader
             ObjectId    = reader.ReadUInt32();
             FileOffset  = reader.ReadUInt32();
             FileSize    = reader.ReadUInt32();
-            /*Date        =*/ reader.ReadUInt32();
-            /*Iteration   =*/ reader.ReadUInt32();
+            Date        = reader.ReadUInt32();
+            Iteration   = reader.ReadUInt32();
         }
 
 

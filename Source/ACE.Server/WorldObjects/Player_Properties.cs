@@ -74,7 +74,15 @@ namespace ACE.Server.WorldObjects
             get => (Character != null && Character.IsPlussed) || (Session != null && ConfigManager.Config.Server.Accounts.OverrideCharacterPermissions && Session.AccessLevel > AccessLevel.Advocate);
         }
 
+        /// <summary>
+        /// Flag indicates if player is an Olthoi Player
+        /// </summary>
         public bool IsOlthoiPlayer { get; set; }
+
+        /// <summary>
+        /// Flag indicates if player is a Gear Knight and Core Plating server option (gearknight_core_plating) is enforced
+        /// </summary>
+        public bool IsGearKnightPlayer { get; set; }
 
 
         public string GodState
@@ -1308,6 +1316,24 @@ namespace ACE.Server.WorldObjects
         {
             get => GetProperty(PropertyBool.NoOlthoiTalk) ?? false;
             set { if (!value) RemoveProperty(PropertyBool.NoOlthoiTalk); else SetProperty(PropertyBool.NoOlthoiTalk, value); }
+        }
+
+        // not sure of the exact use for these fields in retail
+        // from the name, i would be inclined to think the last time an OlthoiPlayer found / looted some slag
+        // it could also mean the last time a Player corpse generated some slag
+
+        // going to lean towards the latter, and use it to indicate the last time a Player died to an OlthoiPlayer
+
+        public int? OlthoiLootTimestamp
+        {
+            get => GetProperty(PropertyInt.OlthoiLootTimestamp);
+            set { if (!value.HasValue) RemoveProperty(PropertyInt.OlthoiLootTimestamp); else SetProperty(PropertyInt.OlthoiLootTimestamp, value.Value); }
+        }
+
+        public int? OlthoiLootStep
+        {
+            get => GetProperty(PropertyInt.OlthoiLootStep);
+            set { if (!value.HasValue) RemoveProperty(PropertyInt.OlthoiLootStep); else SetProperty(PropertyInt.OlthoiLootStep, value.Value); }
         }
 
         /// <summary>

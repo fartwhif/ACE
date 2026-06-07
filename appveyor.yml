@@ -1,7 +1,10 @@
-version: 1.45.{build}
+version: 1.76.{build}
 pull_requests:
   do_not_increment_build_number: true
 skip_tags: true
+branches:
+  except:
+    - /dependabot/
 image: Visual Studio 2022
 configuration: Release
 platform: x64
@@ -18,6 +21,7 @@ init:
     REM appveyor UpdateBuild -Version "%REVISED_VERSION%"
 
     REM set APPVEYOR_BUILD_VERSION=%REVISED_VERSION%
+- ps: Start-Service MySQL80
 dotnet_csproj:
   patch: true
   file: '**\*.csproj'
@@ -40,16 +44,21 @@ environment:
     secure: huM6kANmgP1OdlmHulXVZA==
   access_token:
     secure: lGLpqex+Weod6ZiPw34RwTv999QvoSZ+imTcmYhiJWQL6XkfkVUYcqOO6pJDuAYt
-services: mysql
+services:
+  - mysql
+install:
+  - ps: AppVeyor\AppVeyorInstall.ps1
 before_build:
 - cmd: AppVeyor\AppVeyorBeforeCompile.bat
-build:
-  project: Source\ACE.sln
-  verbosity: minimal
-before_package:
-- cmd: AppVeyor\AppVeyorBeforePackage.bat
+#build:
+#  project: Source\ACE.sln
+#  verbosity: minimal
+build_script:
+- cmd: AppVeyor\AppVeyorBuild.bat
 after_build:
 - cmd: AppVeyor\AppVeyorAfterCompile.bat
+#before_package:
+#- cmd: AppVeyor\AppVeyorBeforePackage.bat
 test_script:
 - cmd: AppVeyor\AppVeyorTestScript.bat
 artifacts:
@@ -57,6 +66,8 @@ artifacts:
   name: test logs
 - path: '**\ACE.Server-*.zip'
   name: release candidate
+- path: '**\ACE.Server.zip'
+  name: release candidate (direct link)
 before_deploy:
 - ps: >-
     git config --global credential.helper store
@@ -69,7 +80,7 @@ deploy:
   description: <h1> ACEmulator Server - v$(appveyor_build_version) </h1> <blockquote>The following changes are included in this release:</<blockquote> <h1></h1>$(APPVEYOR_REPO_COMMIT_MESSAGE) <p>$(APPVEYOR_REPO_COMMIT_MESSAGE_EXTENDED)<p><a href="https://github.com/ACEmulator/ACE/compare/v1.0.XXXX...v1.1.XXXX">Click here to see the detailed changes</a></p><h1><h6>automated server build - $(APPVEYOR_REPO_COMMIT_TIMESTAMP)
   auth_token:
     secure: lGLpqex+Weod6ZiPw34RwTv999QvoSZ+imTcmYhiJWQL6XkfkVUYcqOO6pJDuAYt
-  artifact: AppVeyor\ACE.Server-v$(appveyor_build_version).zip
+  artifact: /.*\.zip/
   draft: true
   prerelease: false
   force_update: true
