@@ -23,12 +23,14 @@ namespace ACE.Server.WorldObjects
         {
             if (IsBusy)
             {
+                Session.Network.EnqueueSend(new GameEventInventoryServerSaveFailed(Session, Guid.Full));
                 SendUseDoneEvent(WeenieError.YoureTooBusy);
                 return;
             }
 
             if (IsTrading)
             {
+                Session.Network.EnqueueSend(new GameEventInventoryServerSaveFailed(Session, Guid.Full));
                 SendUseDoneEvent(WeenieError.CantDoThatTradeInProgress);
                 return;
             }
@@ -37,17 +39,19 @@ namespace ACE.Server.WorldObjects
 
             if (vendor == null)
             {
+                Session.Network.EnqueueSend(new GameEventInventoryServerSaveFailed(Session, Guid.Full));
                 SendUseDoneEvent(WeenieError.NoObject);
                 return;
             }
 
             // if this succeeds, it automatically calls player.FinalizeBuyTransaction()
-            vendor.BuyItems_ValidateTransaction(items, this);
+            if (!vendor.BuyItems_ValidateTransaction(items, this))
+                Session.Network.EnqueueSend(new GameEventInventoryServerSaveFailed(Session, Guid.Full));
 
             SendUseDoneEvent();
         }
 
-        private static readonly uint coinStackWcid = (uint)ACE.Entity.Enum.WeenieClassName.W_COINSTACK_CLASS;
+        private const uint coinStackWcid = (uint)ACE.Entity.Enum.WeenieClassName.W_COINSTACK_CLASS;
 
         /// <summary>
         /// Vendor has validated the transactions and sent a list of items for processing.
@@ -123,6 +127,7 @@ namespace ACE.Server.WorldObjects
         {
             if (IsBusy)
             {
+                Session.Network.EnqueueSend(new GameEventInventoryServerSaveFailed(Session, Guid.Full));
                 SendUseDoneEvent(WeenieError.YoureTooBusy);
                 return;
             }
@@ -131,6 +136,7 @@ namespace ACE.Server.WorldObjects
 
             if (vendor == null)
             {
+                Session.Network.EnqueueSend(new GameEventInventoryServerSaveFailed(Session, Guid.Full));
                 SendUseDoneEvent(WeenieError.NoObject);
                 return;
             }

@@ -69,6 +69,14 @@ namespace ACE.Server.WorldObjects
         {
             if (player.IsDead) return;
 
+            // verify item is still valid
+            if (player.FindObject(Guid.Full, Player.SearchLocations.MyInventory) == null)
+            {
+                //player.SendWeenieError(WeenieError.ObjectGone);   // results in 'Unable to move object!' transient error
+                player.SendTransientError($"Cannot find the {Name}");   // custom message
+                return;
+            }
+
             // trying to use a dispel potion while pk timer is active
             // send error message and cancel - do not consume item
             if (SpellDID != null)
@@ -92,7 +100,8 @@ namespace ACE.Server.WorldObjects
             var soundEvent = new GameMessageSound(player.Guid, GetUseSound(), 1.0f);
             player.EnqueueBroadcast(soundEvent);
 
-            player.TryConsumeFromInventoryWithNetworking(this, 1);
+            if (!UnlimitedUse)
+                player.TryConsumeFromInventoryWithNetworking(this, 1);
         }
 
         public void BoostVital(Player player)
@@ -123,6 +132,12 @@ namespace ACE.Server.WorldObjects
             var verb = BoostValue >= 0 ? "restores" : "takes";
 
             player.Session.Network.EnqueueSend(new GameMessageSystemChat($"The {Name} {verb} {vitalChange} points of your {BoosterEnum}.", ChatMessageType.Broadcast));
+
+            if (player.IsDead)
+            {
+                player.OnDeath(player.DamageHistory.LastDamager, DamageType.Health, false);
+                player.Die();
+            }
         }
 
         public void CastSpell(Player player)

@@ -2,8 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Threading.Tasks;
 using System.Numerics;
+using System.Runtime;
+using System.Threading.Tasks;
 
 using log4net;
 
@@ -408,6 +409,7 @@ namespace ACE.Server.Command.Handlers
         [CommandHandler("barbershop", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld, "Displays the barber ui")]
         public static void BarberShop(Session session, params string[] parameters)
         {
+            session.Player.BarberActive = true;
             session.Network.EnqueueSend(new GameEventStartBarber(session));
         }
 
@@ -1294,7 +1296,7 @@ namespace ACE.Server.Command.Handlers
                             else if (timeWhenDone == TimeSpan.MaxValue)
                                 contracts += $"TimeWhenDone: Unlimited ({contractTracker.TimeWhenDone})\n";
                             else
-                                contracts += $"TimeWhenDone: In {timeWhenDone:%d} days, {timeWhenDone:%h} hours, {timeWhenDone:%m} minutes and, {timeWhenDone:%s} seconds. ({(DateTime.UtcNow + timeWhenDone).ToLocalTime()})\n";
+                                contracts += $"TimeWhenDone: In {timeWhenDone:%d} days, {timeWhenDone:%h} hours, {timeWhenDone:%m} minutes and, {timeWhenDone:%s} seconds. ({(DateTime.UtcNow + timeWhenDone).ToLocalTime().ToCommonString()})\n";
                         }
 
                         if (contractTracker.Stage == Network.Structure.ContractStage.DoneOrPendingRepeat)
@@ -1307,7 +1309,7 @@ namespace ACE.Server.Command.Handlers
                             else if (timeWhenRepeats == TimeSpan.MaxValue)
                                 contracts += $"TimeWhenRepeats: Unlimited ({contractTracker.TimeWhenDone})\n";
                             else
-                                contracts += $"TimeWhenRepeats: In {timeWhenRepeats:%d} days, {timeWhenRepeats:%h} hours, {timeWhenRepeats:%m} minutes and, {timeWhenRepeats:%s} seconds. ({(DateTime.UtcNow + timeWhenRepeats).ToLocalTime()})\n";
+                                contracts += $"TimeWhenRepeats: In {timeWhenRepeats:%d} days, {timeWhenRepeats:%h} hours, {timeWhenRepeats:%m} minutes and, {timeWhenRepeats:%s} seconds. ({(DateTime.UtcNow + timeWhenRepeats).ToLocalTime().ToCommonString()})\n";
                         }
 
                         contracts += "--====--\n";
@@ -1972,7 +1974,7 @@ namespace ACE.Server.Command.Handlers
         public static void HandleSetPurchaseTime(Session session, params string[] parameters)
         {
             var currentTime = DateTime.UtcNow;
-            Console.WriteLine($"Current time: {currentTime}");
+            Console.WriteLine($"Current time: {currentTime.ToCommonString()}");
             // subtract 30 days
             var purchaseTime = currentTime - TimeSpan.FromDays(30);
             // add buffer
@@ -1983,11 +1985,11 @@ namespace ACE.Server.Command.Handlers
             var prevPurchaseTime = DateTimeOffset.FromUnixTimeSeconds(session.Player.HousePurchaseTimestamp ?? 0).UtcDateTime;
             var prevRentDue = DateTimeOffset.FromUnixTimeSeconds(session.Player.House.GetRentDue((uint)(session.Player.HousePurchaseTimestamp ?? 0))).UtcDateTime;
 
-            Console.WriteLine($"Previous purchase time: {prevPurchaseTime}");
-            Console.WriteLine($"New purchase time: {purchaseTime}");
+            Console.WriteLine($"Previous purchase time: {prevPurchaseTime.ToCommonString()}");
+            Console.WriteLine($"New purchase time: {purchaseTime.ToCommonString()}");
 
-            Console.WriteLine($"Previous rent time: {prevRentDue}");
-            Console.WriteLine($"New rent time: {rentDue}");
+            Console.WriteLine($"Previous rent time: {prevRentDue.ToCommonString()}");
+            Console.WriteLine($"New rent time: {rentDue.ToCommonString()}");
 
             session.Player.HousePurchaseTimestamp = (int)Time.GetUnixTime(purchaseTime);
             session.Player.HouseRentTimestamp = (int)session.Player.House.GetRentDue((uint)Time.GetUnixTime(purchaseTime));
@@ -2216,6 +2218,18 @@ namespace ACE.Server.Command.Handlers
             CommandHandlerHelper.WriteOutputInfo(session, ".NET Garbage Collection forced");
         }
 
+        [CommandHandler("forcegc2", AccessLevel.Developer, CommandHandlerFlag.None, 0, "Forces .NET Garbage Collection with LOH Compact")]
+        public static void HandleForceGC2(Session session, params string[] parameters)
+        {
+            // https://learn.microsoft.com/en-us/dotnet/standard/garbage-collection/fundamentals
+            // https://learn.microsoft.com/en-us/dotnet/api/system.runtime.gcsettings.largeobjectheapcompactionmode
+            GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+
+            GC.Collect();
+
+            CommandHandlerHelper.WriteOutputInfo(session, ".NET Garbage Collection forced with LOH Compact");
+        }
+
         [CommandHandler("auditobjectmaint", AccessLevel.Developer, CommandHandlerFlag.None, 0, "Iterates over physics objects to find leaks")]
         public static void HandleAuditObjectMaint(Session session, params string[] parameters)
         {
@@ -2233,7 +2247,8 @@ namespace ACE.Server.Command.Handlers
                     {
                         if (value.ObjMaint.RemoveKnownObject(kvp.Value, false))
                         {
-                            log.Debug($"AuditObjectMaint removed 0x{kvp.Value.ID:X8}:{kvp.Value.Name} (IsDestroyed:{kvp.Value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{kvp.Value.Position}) from 0x{value.ID:X8}:{value.Name} (IsDestroyed:{value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{value.Position}) [ObjectTable]");
+                            if (log.IsDebugEnabled)
+                                log.Debug($"AuditObjectMaint removed 0x{kvp.Value.ID:X8}:{kvp.Value.Name} (IsDestroyed:{kvp.Value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{kvp.Value.Position}) from 0x{value.ID:X8}:{value.Name} (IsDestroyed:{value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{value.Position}) [ObjectTable]");
                             objectTableErrors++;
                         }
                     }
@@ -2245,7 +2260,8 @@ namespace ACE.Server.Command.Handlers
                     {
                         if (value.ObjMaint.RemoveVisibleObject(kvp.Value, false))
                         {
-                            log.Debug($"AuditObjectMaint removed 0x{kvp.Value.ID:X8}:{kvp.Value.Name} (IsDestroyed:{kvp.Value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{kvp.Value.Position}) from 0x{value.ID:X8}:{value.Name} (IsDestroyed:{value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{value.Position}) [VisibleObjectTable]");
+                            if (log.IsDebugEnabled)
+                                log.Debug($"AuditObjectMaint removed 0x{kvp.Value.ID:X8}:{kvp.Value.Name} (IsDestroyed:{kvp.Value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{kvp.Value.Position}) from 0x{value.ID:X8}:{value.Name} (IsDestroyed:{value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{value.Position}) [VisibleObjectTable]");
                             visibleObjectTableErrors++;
                         }
                     }
@@ -2257,7 +2273,8 @@ namespace ACE.Server.Command.Handlers
                     {
                         if (value.ObjMaint.RemoveKnownPlayer(kvp.Value))
                         {
-                            log.Debug($"AuditObjectMaint removed 0x{kvp.Value.ID:X8}:{kvp.Value.Name} (IsDestroyed:{kvp.Value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{kvp.Value.Position}) from 0x{value.ID:X8}:{value.Name} (IsDestroyed:{value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{value.Position}) [VoyeurTable]");
+                            if (log.IsDebugEnabled)
+                                log.Debug($"AuditObjectMaint removed 0x{kvp.Value.ID:X8}:{kvp.Value.Name} (IsDestroyed:{kvp.Value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{kvp.Value.Position}) from 0x{value.ID:X8}:{value.Name} (IsDestroyed:{value.WeenieObj?.WorldObject?.IsDestroyed}, Position:{value.Position}) [VoyeurTable]");
                             voyeurTableErrors++;
                         }
                     }
@@ -2335,7 +2352,7 @@ namespace ACE.Server.Command.Handlers
             for (var i = 0; i < numItems; i++)
             {
                 //var wo = LootGenerationFactory.CreateRandomLootObjects(profile, true);
-                var wo = LootGenerationFactory.CreateRandomLootObjects_New(profile, TreasureItemCategory.MagicItem);
+                var wo = LootGenerationFactory.CreateRandomLootObjects(profile, TreasureItemCategory.MagicItem);
                 if (wo != null)
                     session.Player.TryCreateInInventoryWithNetworking(wo);
                 else
@@ -2435,7 +2452,7 @@ namespace ACE.Server.Command.Handlers
                 //    player.LogOut();
 
                 var msg = $"Player {player.Name} (0x{player.Guid}) found in PlayerManager.onlinePlayers.\n";
-                msg += $"------- Session: {(player.Session != null ? $"{player.Session.EndPoint}" : "NULL")}\n";
+                msg += $"------- Session: {(player.Session != null ? $"C2S: {player.Session.EndPointC2S} | S2C: {player.Session.EndPointS2C}" : "NULL")}\n";
                 msg += $"------- CurrentLandblock: {(player.CurrentLandblock != null ? $"0x{player.CurrentLandblock.Id:X4}" : "NULL")}\n";
                 msg += $"------- Location: {(player.Location != null ? $"{player.Location.ToLOCString()}" : "NULL")}\n";
                 msg += $"------- IsLoggingOut: {player.IsLoggingOut}\n";
@@ -2505,7 +2522,7 @@ namespace ACE.Server.Command.Handlers
             if (target != null && target is Player player)
             {
                 if (player.Session != null)
-                    session.Network.EnqueueSend(new GameMessageSystemChat($"Session IP: {player.Session.EndPoint} | ClientId: {player.Session.Network.ClientId} is connected to Character: {player.Name} (0x{player.Guid.Full.ToString("X8")}), Account: {player.Account.AccountName} ({player.Account.AccountId})", ChatMessageType.Broadcast));
+                    session.Network.EnqueueSend(new GameMessageSystemChat($"Session IP: {player.Session.EndPointC2S.Address} | C2S Port: {player.Session.EndPointC2S.Port} | S2C Port: {player.Session.EndPointS2C?.Port} | ClientId: {player.Session.Network.ClientId} is connected to Character: {player.Name} (0x{player.Guid.Full.ToString("X8")}), Account: {player.Account.AccountName} ({player.Account.AccountId})", ChatMessageType.Broadcast));
                 else
                     session.Network.EnqueueSend(new GameMessageSystemChat($"Session is null for {player.Name} which shouldn't occur.", ChatMessageType.Broadcast));
             }
@@ -2736,8 +2753,8 @@ namespace ACE.Server.Command.Handlers
                         msg += $"GeneratorEvent: {(!string.IsNullOrWhiteSpace(wo.GeneratorEvent) ? wo.GeneratorEvent : "Undef")}\n";
                     if (wo.GeneratorTimeType == GeneratorTimeType.RealTime)
                     {
-                        msg += $"GeneratorStartTime: {wo.GeneratorStartTime} ({Time.GetDateTimeFromTimestamp(wo.GeneratorStartTime).ToLocalTime()})\n";
-                        msg += $"GeneratorEndTime: {wo.GeneratorEndTime} ({Time.GetDateTimeFromTimestamp(wo.GeneratorEndTime).ToLocalTime()})\n";
+                        msg += $"GeneratorStartTime: {wo.GeneratorStartTime} ({Time.GetDateTimeFromTimestamp(wo.GeneratorStartTime).ToLocalTime().ToCommonString()})\n";
+                        msg += $"GeneratorEndTime: {wo.GeneratorEndTime} ({Time.GetDateTimeFromTimestamp(wo.GeneratorEndTime).ToLocalTime().ToCommonString()})\n";
                     }
                     msg += $"GeneratorEndDestructionType: {wo.GeneratorEndDestructionType.ToString()}\n";
                     msg += $"GeneratorDestructionType: {wo.GeneratorDestructionType.ToString()}\n";
@@ -2746,10 +2763,10 @@ namespace ACE.Server.Command.Handlers
                     msg += $"MaxGeneratedObjects: {wo.MaxGeneratedObjects}\n";
                     msg += $"GeneratorInitialDelay: {wo.GeneratorInitialDelay}\n";
                     msg += $"RegenerationInterval: {wo.RegenerationInterval}\n";
-                    msg += $"GeneratorUpdateTimestamp: {wo.GeneratorUpdateTimestamp} ({Time.GetDateTimeFromTimestamp(wo.GeneratorUpdateTimestamp).ToLocalTime()})\n";
-                    msg += $"NextGeneratorUpdateTime: {wo.NextGeneratorUpdateTime} ({((wo.NextGeneratorUpdateTime == double.MaxValue) ? "Disabled" : Time.GetDateTimeFromTimestamp(wo.NextGeneratorUpdateTime).ToLocalTime().ToString())})\n";
-                    msg += $"RegenerationTimestamp: {wo.RegenerationTimestamp} ({Time.GetDateTimeFromTimestamp(wo.RegenerationTimestamp).ToLocalTime()})\n";
-                    msg += $"NextGeneratorRegenerationTime: {wo.NextGeneratorRegenerationTime} ({((wo.NextGeneratorRegenerationTime == double.MaxValue) ? "On Demand" : Time.GetDateTimeFromTimestamp(wo.NextGeneratorRegenerationTime).ToLocalTime().ToString())})\n";
+                    msg += $"GeneratorUpdateTimestamp: {wo.GeneratorUpdateTimestamp} ({Time.GetDateTimeFromTimestamp(wo.GeneratorUpdateTimestamp).ToLocalTime().ToCommonString()})\n";
+                    msg += $"NextGeneratorUpdateTime: {wo.NextGeneratorUpdateTime} ({((wo.NextGeneratorUpdateTime == double.MaxValue) ? "Disabled" : Time.GetDateTimeFromTimestamp(wo.NextGeneratorUpdateTime).ToLocalTime().ToCommonString())})\n";
+                    msg += $"RegenerationTimestamp: {wo.RegenerationTimestamp} ({Time.GetDateTimeFromTimestamp(wo.RegenerationTimestamp).ToLocalTime().ToCommonString()})\n";
+                    msg += $"NextGeneratorRegenerationTime: {wo.NextGeneratorRegenerationTime} ({((wo.NextGeneratorRegenerationTime == double.MaxValue) ? "On Demand" : Time.GetDateTimeFromTimestamp(wo.NextGeneratorRegenerationTime).ToLocalTime().ToCommonString())})\n";
 
                     msg += $"GeneratorProfiles.Count: {wo.GeneratorProfiles.Count(g => !g.IsPlaceholder)}\n";
                     msg += $"GeneratorActiveProfiles.Count: {wo.GeneratorActiveProfiles.Count}\n";
@@ -2769,7 +2786,7 @@ namespace ACE.Server.Command.Handlers
                         msg += $"GeneratedTreasureItem: {profile.GeneratedTreasureItem}\n";
                         msg += $"IsMaxed: {profile.IsMaxed}\n";
                         if (!profile.IsMaxed)
-                            msg += $"IsAvailable: {profile.IsAvailable}{(profile.IsAvailable ? "" : $", NextAvailable: {profile.NextAvailable.ToLocalTime()}")}\n";
+                            msg += $"IsAvailable: {profile.IsAvailable}{(profile.IsAvailable ? "" : $", NextAvailable: {profile.NextAvailable.ToLocalTime().ToCommonString()}")}\n";
                         msg += $"--====--\n";
                         if (profile.Spawned.Count > 0)
                         {
@@ -2800,7 +2817,7 @@ namespace ACE.Server.Command.Handlers
                             msg += "Pending Spawn Times:\n";
                             foreach (var spawn in profile.SpawnQueue)
                             {
-                                msg += $"{spawn.ToLocalTime()}\n";
+                                msg += $"{spawn.ToLocalTime().ToCommonString()}\n";
                             }
                             msg += $"--====--\n";
                         }
@@ -2908,7 +2925,7 @@ namespace ACE.Server.Command.Handlers
             player.EnchantmentManager.RemoveVitae();
 
             if (player != session.Player)
-                session.Network.EnqueueSend(new GameMessageSystemChat("Removed vitae for {player.Name}", ChatMessageType.Broadcast));
+                session.Network.EnqueueSend(new GameMessageSystemChat($"Removed vitae for {player.Name}", ChatMessageType.Broadcast));
         }
 
         [CommandHandler("fast", AccessLevel.Developer, CommandHandlerFlag.RequiresWorld)]
@@ -3812,9 +3829,9 @@ namespace ACE.Server.Command.Handlers
                             msg += $"{shopItem.Name} (0x{shopItem.Guid} | {shopItem.WeenieClassId} | {shopItem.WeenieClassName} | {shopItem.WeenieType})\n";
                             msg += $"StackSize: {shopItem.StackSize ?? 1} | PaletteTemplate: {(PaletteTemplate)shopItem.PaletteTemplate} ({shopItem.PaletteTemplate}) | Shade: {shopItem.Shade:F3}\n";
                             var soldTimestamp = Time.GetDateTimeFromTimestamp(shopItem.SoldTimestamp ?? 0);
-                            msg += $"SoldTimestamp: {soldTimestamp.ToLocalTime()} ({(shopItem.SoldTimestamp.HasValue ? $"{shopItem.SoldTimestamp}" : "NULL")})\n";
+                            msg += $"SoldTimestamp: {soldTimestamp.ToLocalTime().ToCommonString()} ({(shopItem.SoldTimestamp.HasValue ? $"{shopItem.SoldTimestamp}" : "NULL")})\n";
                             var rotTime = soldTimestamp.AddSeconds(PropertyManager.GetDouble("vendor_unique_rot_time").Item);
-                            msg += $"RotTimestamp: {rotTime.ToLocalTime()}\n";
+                            msg += $"RotTimestamp: {rotTime.ToLocalTime().ToCommonString()}\n";
                             var payout = vendor.GetBuyCost(shopItem);
                             msg += $"Paid: {payout:N0} {(payout == 1 ? currencyWeenie.GetName() : currencyWeenie.GetPluralName())}\n";
                             var cost = vendor.GetSellCost(shopItem);
@@ -3849,9 +3866,14 @@ namespace ACE.Server.Command.Handlers
                 return;
             }
 
-            var target = CommandHandlerHelper.GetLastAppraisedObject(session);
+            WorldObject target = null;
 
-            if (target == null) return;
+            if (spell.NonComponentTargetType != ItemType.None)
+            {
+                target = CommandHandlerHelper.GetLastAppraisedObject(session);
+
+                if (target == null) return;
+            }
 
             session.Player.TryCastSpell(spell, target, tryResist: false);
         }

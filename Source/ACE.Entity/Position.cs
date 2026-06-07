@@ -394,6 +394,8 @@ namespace ACE.Entity
         /// </summary>
         public float SquaredDistanceTo(Position p)
         {
+            if (p == null) return float.MaxValue;
+
             if (p.LandblockId == this.LandblockId)
             {
                 var dx = this.PositionX - p.PositionX;
@@ -417,6 +419,8 @@ namespace ACE.Entity
         /// </summary>
         public float Distance2D(Position p)
         {
+            if (p == null) return float.MaxValue;
+
             // originally this returned the offset instead of distance...
             if (p.LandblockId == this.LandblockId)
             {
@@ -439,6 +443,8 @@ namespace ACE.Entity
         /// </summary>
         public float Distance2DSquared(Position p)
         {
+            if (p == null) return float.MaxValue;
+
             // originally this returned the offset instead of distance...
             if (p.LandblockId == this.LandblockId)
             {
@@ -461,6 +467,8 @@ namespace ACE.Entity
         /// </summary>
         public float DistanceTo(Position p)
         {
+            if (p == null) return float.MaxValue;
+
             // originally this returned the offset instead of distance...
             if (p.LandblockId == this.LandblockId)
             {
@@ -486,6 +494,8 @@ namespace ACE.Entity
         /// </summary>
         public Vector3 GetOffset(Position p)
         {
+            if (p == null) return new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+
             var dx = (p.LandblockId.LandblockX - LandblockId.LandblockX) * 192 + p.PositionX - PositionX;
             var dy = (p.LandblockId.LandblockY - LandblockId.LandblockY) * 192 + p.PositionY - PositionY;
             var dz = p.PositionZ - PositionZ;
@@ -503,13 +513,13 @@ namespace ACE.Entity
             return $"0x{LandblockId.Raw:X8} [{PositionX:F6} {PositionY:F6} {PositionZ:F6}] {RotationW:F6} {RotationX:F6} {RotationY:F6} {RotationZ:F6}";
         }
 
-        public static readonly int BlockLength = 192;
-        public static readonly int CellSide = 8;
-        public static readonly int CellLength = 24;
+        public const int BlockLength = 192;
+        public const int CellSide = 8;
+        public const int CellLength = 24;
 
         public bool Equals(Position p)
         {
-            return Cell == p.Cell && Pos.Equals(p.Pos) && Rotation.Equals(p.Rotation);
+            return p != null && Cell == p.Cell && Pos.Equals(p.Pos) && Rotation.Equals(p.Rotation);
         }
     }
 }

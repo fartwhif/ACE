@@ -305,6 +305,7 @@ namespace ACE.Server.WorldObjects
 
             if ((physicsDescriptionFlag & PhysicsDescriptionFlag.Movement) != 0)
             {
+                /* OLD METHOD
                 var movementData = new MovementData(this, CurrentMotionState).Serialize();
 
                 writer.Write((uint)movementData.Length);
@@ -312,6 +313,27 @@ namespace ACE.Server.WorldObjects
                 if (movementData.Length > 0)
                 {
                     writer.Write(movementData);
+                    writer.Write(Convert.ToUInt32(CurrentMotionState.IsAutonomous));
+                }
+                */
+
+                var movementData = new MovementData(this, CurrentMotionState);
+
+                // We'll come back to here to write the length
+                var preWritePosition = writer.BaseStream.Position;
+                writer.Write((uint)0);
+
+                writer.Write(movementData, false);
+
+                var postWritePosition = writer.BaseStream.Position;
+
+                if (preWritePosition + 4 != postWritePosition)
+                {
+                    // Go back and write the length
+                    writer.BaseStream.Position = preWritePosition;
+                    writer.Write((uint)(postWritePosition - preWritePosition - 4));
+
+                    writer.BaseStream.Position = postWritePosition;
                     writer.Write(Convert.ToUInt32(CurrentMotionState.IsAutonomous));
                 }
             }
@@ -426,7 +448,7 @@ namespace ACE.Server.WorldObjects
                             targetSession.Network.EnqueueSend(new GameMessagePrivateUpdatePropertyInt(targetSession.Player, (PropertyInt)property.PropertyId, value.Value));
                         break;
                     default:
-                        log.Debug($"Unsupported property in SendPartialUpdates: id {property.PropertyId}, type {property.PropertyType}.");
+                        log.DebugFormat("Unsupported property in SendPartialUpdates: id {0}, type {1}.", property.PropertyId, property.PropertyType);
                         break;
                 }
             }
@@ -825,7 +847,12 @@ namespace ACE.Server.WorldObjects
             if (WeenieType == WeenieType.Container || WeenieType == WeenieType.Corpse || WeenieType == WeenieType.Chest
                 || WeenieType == WeenieType.Hook || WeenieType == WeenieType.Storage)
             {
-                UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Openable, !IsLocked);
+                var openable = !IsLocked;
+
+                if (WeenieType == WeenieType.Chest && !openable && PropertyManager.GetBool("fix_chest_missing_inventory_window").Item)
+                    openable = true;
+
+                UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Openable, openable);
             }
 
             UpdateObjectDescriptionFlag(ObjectDescriptionFlag.Inscribable, Inscribable);
@@ -1201,7 +1228,7 @@ namespace ACE.Server.WorldObjects
             return animLength;
         }
 
-        public float EnqueueMotionAction(ActionChain actionChain, List<MotionCommand> motionCommands, float speed = 1.0f, MotionStance? useStance = null, bool usePrevCommand = false)
+        public float EnqueueMotionAction(ActionChain actionChain, List<MotionCommand> motionCommands, float speed = 1.0f, MotionStance? useStance = null, bool usePrevCommand = false, bool checkCasting = false)
         {
             var stance = useStance ?? CurrentMotionState.Stance;
 
@@ -1228,6 +1255,9 @@ namespace ACE.Server.WorldObjects
 
             actionChain.AddAction(this, () =>
             {
+                if (checkCasting && this is Player player && player.MagicState != null && !player.MagicState.IsCasting)
+                    return;
+
                 CurrentMotionState = motion;
                 EnqueueBroadcastMotion(motion, null, false);
 

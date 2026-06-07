@@ -59,7 +59,7 @@ namespace ACE.Server.WorldObjects
         {
             var lastDamager = lastDamagerInfo?.TryGetAttacker();
 
-            if (lastDamagerInfo == null || lastDamagerInfo.Guid == Guid || lastDamager is Hotspot)
+            if (lastDamagerInfo == null || lastDamagerInfo.Guid == Guid || lastDamager is Hotspot || lastDamager is Food)   // !(lastDamager is Creature)?
                 return Strings.General[1];
 
             var deathMessage = Strings.GetDeathMessage(damageType, criticalHit);
@@ -425,11 +425,11 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Create a corpse for both creatures and players currently
         /// </summary>
-        protected void CreateCorpse(DamageHistoryInfo killer)
+        protected void CreateCorpse(DamageHistoryInfo killer, bool hadVitae = false)
         {
             if (NoCorpse)
             {
-                if (killer.IsOlthoiPlayer) return;
+                if (killer != null && killer.IsOlthoiPlayer) return;
 
                 var loot = GenerateTreasure(killer, null);
 
@@ -524,43 +524,69 @@ namespace ACE.Server.WorldObjects
             if (player != null)
             {
                 corpse.SetPosition(PositionType.Location, corpse.Location);
-                var dropped = player.CalculateDeathItems(corpse);
-                corpse.RecalculateDecayTime(player);
 
-                if (dropped.Count > 0)
-                    saveCorpse = true;
+                var killerIsOlthoiPlayer = killer != null && killer.IsOlthoiPlayer;
+                var killerIsPkPlayer = killer != null && killer.IsPlayer && killer.Guid != Guid;
 
-                if ((player.Location.Cell & 0xFFFF) < 0x100)
+                //var dropped = killer != null && killer.IsOlthoiPlayer ? player.CalculateDeathItems_Olthoi(corpse, hadVitae) : player.CalculateDeathItems(corpse);
+
+                if (killerIsOlthoiPlayer || player.IsOlthoiPlayer)
                 {
-                    player.SetPosition(PositionType.LastOutsideDeath, new Position(corpse.Location));
-                    player.Session.Network.EnqueueSend(new GameMessagePrivateUpdatePosition(player, PositionType.LastOutsideDeath, corpse.Location));
+                    var dropped = player.CalculateDeathItems_Olthoi(corpse, hadVitae, killerIsOlthoiPlayer, killerIsPkPlayer);
+
+                    foreach (var wo in dropped)
+                        DoCantripLogging(killer, wo);
+
+                    corpse.RecalculateDecayTime(player);
 
                     if (dropped.Count > 0)
-                        player.Session.Network.EnqueueSend(new GameMessageSystemChat($"Your corpse is located at ({corpse.Location.GetMapCoordStr()}).", ChatMessageType.Broadcast));
-                }
+                        saveCorpse = true;
 
-                var isPKdeath = player.IsPKDeath(killer);
-                var isPKLdeath = player.IsPKLiteDeath(killer);
-
-                if (isPKdeath)
                     corpse.PkLevel = PKLevel.PK;
-
-                if (!isPKdeath && !isPKLdeath)
-                {
-                    var miserAug = player.AugmentationLessDeathItemLoss * 5;
-                    if (miserAug > 0)
-                        player.Session.Network.EnqueueSend(new GameMessageSystemChat($"Your augmentation has reduced the number of items you can lose by {miserAug}!", ChatMessageType.Broadcast));
                 }
+                else
+                {
+                    var dropped = player.CalculateDeathItems(corpse);
 
-                if (dropped.Count == 0 && !isPKLdeath)
-                    player.Session.Network.EnqueueSend(new GameMessageSystemChat($"You have retained all your items. You do not need to recover your corpse!", ChatMessageType.Broadcast));
+                    corpse.RecalculateDecayTime(player);
+
+                    if (dropped.Count > 0)
+                        saveCorpse = true;
+
+                    if ((player.Location.Cell & 0xFFFF) < 0x100)
+                    {
+                        player.SetPosition(PositionType.LastOutsideDeath, new Position(corpse.Location));
+                        player.Session.Network.EnqueueSend(new GameMessagePrivateUpdatePosition(player, PositionType.LastOutsideDeath, corpse.Location));
+
+                        if (dropped.Count > 0)
+                            player.Session.Network.EnqueueSend(new GameMessageSystemChat($"Your corpse is located at ({corpse.Location.GetMapCoordStr()}).", ChatMessageType.Broadcast));
+                    }
+
+                    var isPKdeath = player.IsPKDeath(killer);
+                    var isPKLdeath = player.IsPKLiteDeath(killer);
+
+                    if (isPKdeath)
+                        corpse.PkLevel = PKLevel.PK;
+
+                    if (!isPKdeath && !isPKLdeath)
+                    {
+                        var miserAug = player.AugmentationLessDeathItemLoss * 5;
+                        if (miserAug > 0)
+                            player.Session.Network.EnqueueSend(new GameMessageSystemChat($"Your augmentation has reduced the number of items you can lose by {miserAug}!", ChatMessageType.Broadcast));
+                    }
+
+                    if (dropped.Count == 0 && !isPKLdeath)
+                        player.Session.Network.EnqueueSend(new GameMessageSystemChat($"You have retained all your items. You do not need to recover your corpse!", ChatMessageType.Broadcast));
+                }
             }
             else
             {
                 corpse.IsMonster = true;
 
-                if (!killer.IsOlthoiPlayer)
+                if (killer == null || !killer.IsOlthoiPlayer)
                     GenerateTreasure(killer, corpse);
+                else
+                    GenerateTreasure_Olthoi(killer, corpse);
 
                 if (killer != null && killer.IsPlayer && !killer.IsOlthoiPlayer)
                 {
@@ -594,9 +620,9 @@ namespace ACE.Server.WorldObjects
             if (player != null)
             {
                 if (corpse.PhysicsObj == null || corpse.PhysicsObj.Position == null)
-                    log.Debug($"[CORPSE] {Name}'s corpse (0x{corpse.Guid}) failed to spawn! Tried at {player.Location.ToLOCString()}");
+                    log.InfoFormat("[CORPSE] {0}'s corpse (0x{1}) failed to spawn! Tried at {2}", Name, corpse.Guid, player.Location.ToLOCString());
                 else
-                    log.Debug($"[CORPSE] {Name}'s corpse (0x{corpse.Guid}) is located at {corpse.PhysicsObj.Position}");
+                    log.InfoFormat("[CORPSE] {0}'s corpse (0x{1}) is located at {2}", Name, corpse.Guid, corpse.PhysicsObj.Position);
             }
 
             if (saveCorpse)
@@ -683,15 +709,30 @@ namespace ACE.Server.WorldObjects
             return droppedItems;
         }
 
+        /// <summary>
+        /// Generates random amounts of slag on a corpse
+        /// when an OlthoiPlayer is the killer
+        /// </summary>
+        private void GenerateTreasure_Olthoi(DamageHistoryInfo killer, Corpse corpse)
+        {
+            if (DeathTreasure == null) return;
+
+            var slag = LootGenerationFactory.RollSlag(DeathTreasure);
+
+            if (slag == null) return;
+
+            corpse.TryAddToInventory(slag);
+        }
+
         public void DoCantripLogging(DamageHistoryInfo killer, WorldObject wo)
         {
             var epicCantrips = wo.EpicCantrips;
             var legendaryCantrips = wo.LegendaryCantrips;
 
-            if (epicCantrips.Count > 0)
+            if (epicCantrips.Count > 0 && log.IsDebugEnabled)
                 log.Debug($"[LOOT][EPIC] {Name} ({Guid}) generated item with {epicCantrips.Count} epic{(epicCantrips.Count > 1 ? "s" : "")} - {wo.Name} ({wo.Guid}) - {GetSpellList(epicCantrips)} - killed by {killer?.Name} ({killer?.Guid})");
 
-            if (legendaryCantrips.Count > 0)
+            if (legendaryCantrips.Count > 0 && log.IsDebugEnabled)
                 log.Debug($"[LOOT][LEGENDARY] {Name} ({Guid}) generated item with {legendaryCantrips.Count} legendar{(legendaryCantrips.Count > 1 ? "ies" : "y")} - {wo.Name} ({wo.Guid}) - {GetSpellList(legendaryCantrips)} - killed by {killer?.Name} ({killer?.Guid})");
         }
 
