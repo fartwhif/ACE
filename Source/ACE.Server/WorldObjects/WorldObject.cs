@@ -858,8 +858,14 @@ namespace ACE.Server.WorldObjects
                     item.Destroy();
             }
 
-            if (this is Pet pet && pet.P_PetOwner?.CurrentActivePet == this)
-                pet.P_PetOwner.CurrentActivePet = null;
+            if (this is Pet pet)
+            {
+                if (pet.P_PetOwner?.CurrentActivePet == this)
+                    pet.P_PetOwner.CurrentActivePet = null;
+
+                if (pet.P_PetDevice?.Pet == Guid.Full)
+                    pet.P_PetDevice.Pet = null;
+            }
 
             if (this is Vendor vendor)
             {
@@ -1009,8 +1015,8 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public bool IsLinkSpot => WeenieType == WeenieType.Generic && WeenieClassName.Equals("portaldestination");
 
-        public static readonly float LocalBroadcastRange = 96.0f;
-        public static readonly float LocalBroadcastRangeSq = LocalBroadcastRange * LocalBroadcastRange;
+        public const float LocalBroadcastRange = 96.0f;
+        public const float LocalBroadcastRangeSq = LocalBroadcastRange * LocalBroadcastRange;
 
         public SetPosition ScatterPos { get; set; }
 
@@ -1077,5 +1083,19 @@ namespace ACE.Server.WorldObjects
         public virtual bool IsBeingTradedOrContainsItemBeingTraded(HashSet<ObjectGuid> guidList) => guidList.Contains(Guid);
 
         public bool IsSocietyArmor => WieldSkillType >= (int)PropertyInt.SocietyRankCelhan && WieldSkillType <= (int)PropertyInt.SocietyRankRadblo;
+
+        public int StructureUnitValue
+        {
+            get
+            {
+                var weenie = DatabaseManager.World.GetCachedWeenie(WeenieClassId);
+                var weenieValue = weenie?.GetValue() ?? 0;
+                var weenieMaxStructure = weenie?.GetMaxStructure() ?? 1;
+
+                var structureUnitValue = weenieValue / weenieMaxStructure;
+
+                return Math.Max(0, structureUnitValue);
+            }
+        }
     }
 }

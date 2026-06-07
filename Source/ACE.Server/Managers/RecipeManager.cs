@@ -21,6 +21,7 @@ using ACE.Server.Factories;
 using ACE.Server.Network.GameEvent.Events;
 using ACE.Server.Network.GameMessages.Messages;
 using ACE.Server.WorldObjects;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace ACE.Server.Managers
 {
@@ -44,6 +45,14 @@ namespace ACE.Server.Managers
             if (player.IsBusy)
             {
                 player.SendUseDoneEvent(WeenieError.YoureTooBusy);
+                return;
+            }
+
+            var allowCraftInCombat = PropertyManager.GetBool("allow_combat_mode_crafting").Item;
+
+            if (!allowCraftInCombat && player.CombatMode != CombatMode.NonCombat)
+            {
+                player.SendUseDoneEvent(WeenieError.YouMustBeInPeaceModeToTrade);
                 return;
             }
 
@@ -72,7 +81,7 @@ namespace ACE.Server.Managers
             }
 
             if (recipe.IsTinkering())
-                log.Debug($"[TINKERING] {player.Name}.HandleTinkering({source.NameWithMaterial}, {target.NameWithMaterial}) | Status: {(confirmed ? "" : "un")}confirmed");
+                log.InfoFormat("[TINKERING] {0}.UseObjectOnTarget({1}, {2}) | Status: {3}confirmed", player.Name, source.NameWithMaterial, target.NameWithMaterial, (confirmed ? "" : "un"));
 
             var percentSuccess = GetRecipeChance(player, source, target, recipe);
 
@@ -87,43 +96,56 @@ namespace ACE.Server.Managers
             if (!confirmed && player.LumAugSkilledCraft > 0)
                 player.SendMessage($"Your Aura of the Craftman augmentation increased your skill by {player.LumAugSkilledCraft}!");
 
-            if (showDialog && !confirmed)
-            {
-                ShowDialog(player, source, target, recipe, percentSuccess.Value);
-                return;
-            }
+            var motionCommand = MotionCommand.ClapHands;
 
             var actionChain = new ActionChain();
-
-            var animTime = 0.0f;
+            var nextUseTime = 0.0f;
 
             player.IsBusy = true;
 
-            if (player.CombatMode != CombatMode.NonCombat)
+            if (allowCraftInCombat && player.CombatMode != CombatMode.NonCombat)
             {
+                // Drop out of combat mode.  This depends on the server property "allow_combat_mode_craft" being True.
+                // If not, this action would have aborted due to not being in NonCombat mode.
                 var stanceTime = player.SetCombatMode(CombatMode.NonCombat);
                 actionChain.AddDelaySeconds(stanceTime);
 
-                animTime += stanceTime;
+                nextUseTime += stanceTime;
             }
 
-            animTime += player.EnqueueMotion(actionChain, MotionCommand.ClapHands);
+            var motion = new Motion(player, motionCommand);
+            var currentStance = player.CurrentMotionState.Stance; // expected to be MotionStance.NonCombat
+            var clapTime = !confirmed ? Physics.Animation.MotionTable.GetAnimationLength(player.MotionTableId, currentStance, motionCommand) : 0.0f;
 
-            actionChain.AddAction(player, () => HandleRecipe(player, source, target, recipe, percentSuccess.Value));
-
-            player.EnqueueMotion(actionChain, MotionCommand.Ready);
-
-            actionChain.AddAction(player, () =>
+            if (!confirmed)
             {
-                if (!showDialog)
-                    player.SendUseDoneEvent();
+                actionChain.AddAction(player, () => player.SendMotionAsCommands(motionCommand, currentStance));
+                actionChain.AddDelaySeconds(clapTime);
 
-                player.IsBusy = false;
-            });
+                nextUseTime += clapTime;
+            }
+
+            if (showDialog && !confirmed)
+            {
+                actionChain.AddAction(player, () => ShowDialog(player, source, target, recipe, percentSuccess.Value));
+                actionChain.AddAction(player, () => player.IsBusy = false);
+            }
+            else
+            {
+                actionChain.AddAction(player, () => HandleRecipe(player, source, target, recipe, percentSuccess.Value));
+
+                actionChain.AddAction(player, () =>
+                {
+                    if (!showDialog)
+                        player.SendUseDoneEvent();
+
+                    player.IsBusy = false;
+                });
+            }
 
             actionChain.EnqueueChain();
 
-            player.NextUseTime = DateTime.UtcNow.AddSeconds(animTime);
+            player.NextUseTime = DateTime.UtcNow.AddSeconds(nextUseTime);
         }
 
         public static bool HasDifficulty(Recipe recipe)
@@ -1046,7 +1068,7 @@ namespace ACE.Server.Managers
 
                 player.Session.Network.EnqueueSend(new GameMessageSystemChat(message, ChatMessageType.Craft));
 
-                log.Debug($"[CRAFTING] {player.Name} used {source.NameWithMaterial} on {target.NameWithMaterial} {(success ? "" : "un")}successfully. {(destroySource ? $"| {source.NameWithMaterial} was destroyed " : "")}{(destroyTarget ? $"| {target.NameWithMaterial} was destroyed " : "")}| {message}");
+                log.Info($"[CRAFTING] {player.Name} used {source.NameWithMaterial} on {target.NameWithMaterial} {(success ? "" : "un")}successfully. {(destroySource ? $"| {source.NameWithMaterial} was destroyed " : "")}{(destroyTarget ? $"| {target.NameWithMaterial} was destroyed " : "")}| {message}");
             }
             else
                 BroadcastTinkering(player, source, target, successChance, success);
@@ -1056,15 +1078,26 @@ namespace ACE.Server.Managers
 
         public static void BroadcastTinkering(Player player, WorldObject tool, WorldObject target, double chance, bool success)
         {
+            // retail AC had some inconsistency with respect to the messages broadcast by tinkering.
+            //
+            // Largely this revolved around the name of the weenies that represented each of the salvage bags.
+            // First, there were name changes that were a result of the client side pre-pending of material type which resulted in bags being named "Salvage", "Salvaged"
+            // Second, these bags that were generated from loot by players always ended with the number of materials in the bag, such as (100), (88), (1)
+            // while non-lootgen bags did not include the number, so the name of the bag when displayed or broadcast varied like "Steel Salvage (100)", "Steel Salvaged (100)", "Steel Salvage"
+            // Third, Foolproof bags, again depending on weenie names, also had their own variations which resulted in display names like "Foolproof Black Garnet Gem", "Zircon Foolproof Zircon", "Imperial Topaz Foolproof Imperial Topaz"
+            // in many cases, there are multiple weenies of a particular salvage type, used by various systems, which resulted in each tinker operation having varied output even when doing essentially the same thing
+            // Finally, items that were inscribed were surprisingly identified in the broadcast like "Reed Shark Hide Studded Leather Sleeves inscribed by Callaway", "Copper Frost Bow inscribed by Mini Bonsai"
+            //
+            // ACE output, as seen below, has for the most part standardized the message due to weenie name changes, salvage coding and recipe handling differences
+            // 
             var sourceName = Regex.Replace(tool.NameWithMaterial, @" \(\d+\)$", "");
 
-            // send local broadcast
-            if (success)
-                player.EnqueueBroadcast(new GameMessageSystemChat($"{player.Name} successfully applies the {sourceName} (workmanship {(tool.Workmanship ?? 0):#.00}) to the {target.NameWithMaterial}.", ChatMessageType.Craft), WorldObject.LocalBroadcastRange, ChatMessageType.Craft);
-            else
-                player.EnqueueBroadcast(new GameMessageSystemChat($"{player.Name} fails to apply the {sourceName} (workmanship {(tool.Workmanship ?? 0):#.00}) to the {target.NameWithMaterial}. The target is destroyed.", ChatMessageType.Craft), WorldObject.LocalBroadcastRange, ChatMessageType.Craft);
+            var msg = $"{player.Name} {(success ? "successfully applies" : "fails to apply")} the {sourceName} (workmanship {(tool.Workmanship ?? 0):#.00}) to the {target.NameWithMaterial}{((target.Inscription != null && target.ScribeName != null) ? $" inscribed by {target.ScribeName}" : "")}.{(!success ? " The target is destroyed." : "")}";
 
-            log.Debug($"[TINKERING] {player.Name} {(success ? "successfully applies" : "fails to apply")} the {sourceName} (workmanship {(tool.Workmanship ?? 0):#.00}) to the {target.NameWithMaterial}.{(!success ? " The target is destroyed." : "")} | Chance: {chance}");
+            // send local broadcast
+            player.EnqueueBroadcast(new GameMessageSystemChat(msg, ChatMessageType.Craft), WorldObject.LocalBroadcastRange, ChatMessageType.Craft);
+
+            log.Info($"[TINKERING] {msg} | Chance: {chance}");
         }
 
         public static WorldObject CreateItem(Player player, uint wcid, uint amount)
@@ -1441,15 +1474,15 @@ namespace ACE.Server.Managers
             }
         }
 
-        /// <summary>
-        /// flag to use c# logic instead of mutate script logic
-        /// </summary>
-        private static readonly bool useMutateNative = false;
+        ///// <summary>
+        ///// flag to use c# logic instead of mutate script logic
+        ///// </summary>
+        //private const bool useMutateNative = false;
 
         public static bool TryMutate(Player player, WorldObject source, WorldObject target, Recipe recipe, uint dataId, HashSet<uint> modified)
         {
-            if (useMutateNative)
-                return TryMutateNative(player, source, target, recipe, dataId);
+            //if (useMutateNative)
+            //    return TryMutateNative(player, source, target, recipe, dataId);
 
             var numTimesTinkered = target.NumTimesTinkered;
 
