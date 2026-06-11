@@ -21,22 +21,29 @@ namespace ACE.Server.WorldObjects
     {
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
-        private List<Action<Portal, Player>> warp_CollideObjectHooks = new List<Action<Portal, Player>>();
+        private List<Func<Portal, Player, bool>> warp_CollideObjectHooks = new List<Func<Portal, Player, bool>>();
 
-        public void warp_AddCollideObjectHook(Action<Portal, Player> action)
-        {
-            warp_CollideObjectHooks.Add(action);
-            log.Debug($"[warp] added CollideObject hook for {Name}");
-        }
+         public void warp_AddCollideObjectHook(Func<Portal, Player, bool> action)
+         {
+             warp_CollideObjectHooks.Add(action);
+             log.Debug($"[warp] added CollideObject hook for {Name}");
+         }
 
-        private void warp_ExecuteCollideObjectHooks(Player player)
-        {
-            for (int i = 0; i < warp_CollideObjectHooks.Count; i++)
-            {
-                warp_CollideObjectHooks[i](this, player);
-                log.Debug($"[warp] executed CollideObject hook for {Name} and {player.Name}");
-            }
-        }
+         /// <summary>
+         /// Execute warp collide hooks. Returns true if any hook handled the collision
+         /// and suppressed the default portal behavior.
+         /// </summary>
+         private bool warp_ExecuteCollideObjectHooks(Player player)
+         {
+             for (int i = 0; i < warp_CollideObjectHooks.Count; i++)
+             {
+                 bool handled = warp_CollideObjectHooks[i](this, player);
+                 log.Debug($"[warp] executed CollideObject hook for {Name} and {player.Name}, handled={handled}");
+                 if (handled)
+                     return true;
+             }
+             return false;
+         }
 
 
 
@@ -122,10 +129,10 @@ namespace ACE.Server.WorldObjects
         //}
 
         public virtual void OnCollideObject(Player player)
-        {
-            warp_ExecuteCollideObjectHooks(player);
-            OnActivate(player);
-        }
+          {
+              if (!warp_ExecuteCollideObjectHooks(player))
+                  OnActivate(player);
+          }
 
         public override void OnCastSpell(WorldObject activator)
         {
