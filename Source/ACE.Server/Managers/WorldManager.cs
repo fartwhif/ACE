@@ -69,6 +69,14 @@ namespace ACE.Server.Managers
             log.Info($"World started and is currently {WorldStatus.ToString()}{(PropertyManager.GetBool("world_closed", false).Item ? "" : " and will open automatically when server startup is complete.")}");
             if (WorldStatus == WorldStatusState.Closed)
                 log.Info($"To open world to players, use command: world open");
+
+            // Auto-open world after startup if not explicitly closed
+            if (!PropertyManager.GetBool("world_closed", false).Item)
+            {
+                Thread.Sleep(2000); // Wait for plugins to finish initializing
+                WorldStatus = WorldStatusState.Open;
+                log.Info($"[CHAT][AUDIT] [SYSTEM] says on the Audit channel, \"World is now open\"");
+            }
         }
 
         internal static void Open(Player player)

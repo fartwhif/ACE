@@ -432,7 +432,15 @@ namespace ACE.Server.Managers
 
                 playerNames[offlinePlayer.Name] = player;
 
-                playerAccounts[offlinePlayer.Account.AccountId][offlinePlayer.Guid.Full] = player;
+                 if (offlinePlayer.Account != null)
+                 {
+                     if (!playerAccounts.TryGetValue(offlinePlayer.Account.AccountId, out var playerAccountsDict))
+                     {
+                         playerAccountsDict = new Dictionary<uint, IPlayer>();
+                         playerAccounts[offlinePlayer.Account.AccountId] = playerAccountsDict;
+                     }
+                     playerAccountsDict[offlinePlayer.Guid.Full] = player;
+                 }
             }
             finally
             {
@@ -468,7 +476,15 @@ namespace ACE.Server.Managers
 
                 playerNames[offlinePlayer.Name] = offlinePlayer;
 
-                playerAccounts[offlinePlayer.Account.AccountId][offlinePlayer.Guid.Full] = offlinePlayer;
+                  if (offlinePlayer.Account != null)
+                  {
+                      if (!playerAccounts.TryGetValue(offlinePlayer.Account.AccountId, out var playerAccountsDict2))
+                      {
+                          playerAccountsDict2 = new Dictionary<uint, IPlayer>();
+                          playerAccounts[offlinePlayer.Account.AccountId] = playerAccountsDict2;
+                      }
+                      playerAccountsDict2[offlinePlayer.Guid.Full] = offlinePlayer;
+                  }
             }
             finally
             {
