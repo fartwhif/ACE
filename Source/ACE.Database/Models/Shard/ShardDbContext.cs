@@ -1283,8 +1283,8 @@ namespace ACE.Database.Models.Shard
                     .HasColumnName("download_Time");
 
                 entity.Property(e => e.Cookie)
-                    .HasColumnType("varchar(15)")
-                    .HasColumnName("cookie");
+                     .HasColumnType("varchar(1024)")
+                     .HasColumnName("cookie");
 
                 entity.Property(e => e.SourceThumbprint)
                     .HasColumnType("varchar(45)")

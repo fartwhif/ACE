@@ -41,6 +41,87 @@ namespace ACE.Server.Entity
         private static readonly ILog log = LogManager.GetLogger(System.Reflection.MethodBase.GetCurrentMethod().DeclaringType);
 
         public static float AdjacencyLoadRange { get; } = 96f;
+
+        /// <summary>
+        /// Plugin hook: callbacks registered per landblock ID that fire after
+        /// CreateWorldObjects completes. Allows plugins to spawn persistent
+        /// objects that survive landblock unload/reload cycles.
+        /// Callbacks are invoked on the world thread via the action queue.
+        /// </summary>
+        private static readonly Dictionary<uint, List<Action<Landblock>>> warp_LandblockLoadHooks =
+            new Dictionary<uint, List<Action<Landblock>>>();
+
+        /// <summary>
+        /// Register a callback to be invoked whenever a landblock with the
+        /// given ID finishes loading its database objects.
+        /// The callback runs on the world thread and receives the Landblock instance.
+        /// </summary>
+        public static void warp_AddLandblockLoadHook(uint landblockId, Action<Landblock> callback)
+        {
+            lock (warp_LandblockLoadHooks)
+            {
+                if (!warp_LandblockLoadHooks.TryGetValue(landblockId, out var hooks))
+                {
+                    hooks = new List<Action<Landblock>>();
+                    warp_LandblockLoadHooks[landblockId] = hooks;
+                }
+                hooks.Add(callback);
+            }
+            log.DebugFormat("[warp] registered LandblockLoadHook for 0x{0:X4}", landblockId);
+        }
+
+        /// <summary>
+        /// Remove all hooks registered by a specific callback for a landblock.
+        /// </summary>
+        public static void warp_RemoveLandblockLoadHook(uint landblockId, Action<Landblock> callback)
+        {
+            lock (warp_LandblockLoadHooks)
+            {
+                if (warp_LandblockLoadHooks.TryGetValue(landblockId, out var hooks))
+                {
+                    hooks.RemoveAll(h => h == callback);
+                    if (hooks.Count == 0)
+                        warp_LandblockLoadHooks.Remove(landblockId);
+                }
+            }
+        }
+
+         /// <summary>
+        /// Invoke all registered landblock load hooks for this landblock.
+        /// Called from CreateWorldObjects after database objects are loaded.
+        /// </summary>
+        private void InvokeLandblockLoadHooks()
+        {
+            uint lbId = Id.Landblock;
+            lock (warp_LandblockLoadHooks)
+            {
+                if (!warp_LandblockLoadHooks.TryGetValue(lbId, out var hooks))
+                    return;
+                var snapshot = hooks.ToList();
+                if (snapshot.Count == 0)
+                    return;
+
+                foreach (var hook in snapshot)
+                {
+                    try
+                    {
+                        hook(this);
+                    }
+                    catch (Exception ex)
+                    {
+                        log.ErrorFormat("[warp] LandblockLoadHook exception for 0x{0:X4}: {1}", lbId, ex.Message);
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Returns the WorldObject with the given GUID if it exists on this landblock.
+        /// </summary>
+        public WorldObject GetWorldObject(ObjectGuid guid)
+        {
+            return worldObjects.TryGetValue(guid, out var wo) ? wo : null;
+        }
         public static float OutdoorChatRange { get; } = 75f;
         public static float IndoorChatRange { get; } = 25f;
         public static float MaxXY { get; } = 192f;
@@ -241,6 +322,10 @@ namespace ACE.Server.Entity
                 }
 
                 CreateWorldObjectsCompleted = true;
+
+                // Invoke plugin landblock load hooks after database objects are loaded.
+                // Hooks run on the world thread and can spawn additional objects.
+                InvokeLandblockLoadHooks();
 
                 PhysicsLandblock.SortObjects();
             }));
